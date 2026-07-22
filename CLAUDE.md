@@ -26,7 +26,12 @@ dotnet publish ./implement/read-memory-64-bit/read-memory-64-bit.csproj -c Relea
 Alternate UI (requires the `pine` executable on PATH — download from the pine-vm releases page; needs the .NET 9 runtime):
 
 ```powershell
-# run backend + frontend as a local web server on port 80
+# preferred: stops any instance on the port, deploys, and waits until the server actually answers
+./start-alternate-ui.ps1                  # port 80
+./start-alternate-ui.ps1 -Port 8080       # a second instance, to try a change without disturbing the first
+./start-alternate-ui.ps1 -Stop            # stop it again
+
+# upstream's original one-liner (no readiness check, must be run from that directory)
 cd implement/alternate-ui ; ./run-alternate-ui.ps1
 # frontend at http://localhost:80/ ; http://localhost:80/with-inspector enables the Elm debugger
 
