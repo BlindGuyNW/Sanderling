@@ -26,6 +26,7 @@ import Frontend.InspectParsedUserInterface
         )
 import Frontend.View.Common
 import Frontend.View.GenericWindow
+import Frontend.View.Overview
 import Html
 import Html.Attributes as HA
 import Html.Attributes.Aria
@@ -106,7 +107,6 @@ type alias ParseMemoryReadingCompleted =
 type alias ParseMemoryReadingSuccess =
     { uiTree : EveOnline.MemoryReading.UITreeNode
     , uiNodesWithDisplayRegion : Dict.Dict String UITreeNodeWithDisplayRegion
-    , overviewWindows : List OverviewWindow
     , parsedUserInterface : EveOnline.ParseUserInterface.ParsedUserInterface
     }
 
@@ -168,20 +168,6 @@ type alias UITreeViewState =
 type ResponseFromServer
     = RunInVolatileProcessResponse InterfaceToFrontendClient.RunInVolatileProcessResponseStructure
     | ReadLogResponse (List String)
-
-
-type alias OverviewWindow =
-    { headers : List String
-    , entries : List OverviewEntry
-    }
-
-
-type alias OverviewEntry =
-    { uiTreeNode : EveOnline.ParseUserInterface.UITreeNodeWithDisplayRegion
-    , cellsContents : Dict.Dict String String
-    , iconSpriteColorPercent : Maybe EveOnline.ParseUserInterface.ColorComponents
-    , bgColorFillsPercent : List EveOnline.ParseUserInterface.ColorComponents
-    }
 
 
 type alias InputRouteConfig =
@@ -990,16 +976,8 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                                         , verticalSpacerFromHeightInEm 0.5
                                         ]
                                )
-                            ++ [ [ (String.fromInt (List.length memoryReading.overviewWindows) ++ " Overview windows")
-                                    |> Html.text
-                                 ]
-                                    |> Html.h3 []
-                               , memoryReading.overviewWindows
-                                    |> List.map (displayReadOverviewWindow maybeInputRoute)
-                                    |> List.intersperse (verticalSpacerFromHeightInEm 1)
-                                    |> Html.div []
-                               , verticalSpacerFromHeightInEm 0.5
-                               , [ ((memoryReading.parsedUserInterface.contextMenus |> List.length |> String.fromInt) ++ " Context menus") |> Html.text ] |> Html.h3 []
+                            ++ displayOverviewWindows maybeInputRoute memoryReading.parsedUserInterface.overviewWindows
+                            ++ [ [ ((memoryReading.parsedUserInterface.contextMenus |> List.length |> String.fromInt) ++ " Context menus") |> Html.text ] |> Html.h3 []
                                , displayParsedContextMenus maybeInputRoute memoryReading.parsedUserInterface.contextMenus
                                , verticalSpacerFromHeightInEm 0.5
                                ]
@@ -1527,82 +1505,26 @@ displayTextForStationServiceName name =
             other
 
 
-displayReadOverviewWindow : Maybe InputRouteConfig -> OverviewWindow -> Html.Html Event
-displayReadOverviewWindow maybeInputRouteConfig overviewWindow =
+{-| The overview, which the client shows one of per overview tab.
+
+An overview window the client is not showing is left out rather than announced as empty, so a
+docked client says nothing about the overview instead of saying it has none.
+
+-}
+displayOverviewWindows : Maybe InputRouteConfig -> List EveOnline.ParseUserInterface.OverviewWindow -> List (Html.Html Event)
+displayOverviewWindows maybeInputRouteConfig overviewWindows =
     let
-        columnsFromHeaders =
-            overviewWindow.headers
-                |> List.map
-                    (\header ->
-                        { header = header
-                        , cellHtmlFromEntry =
-                            \overviewEntry ->
-                                overviewEntry.cellsContents
-                                    |> Dict.get header
-                                    |> Maybe.withDefault ""
-                                    |> Html.text
-                        }
-                    )
-
-        iconColumn =
-            { header = ""
-            , cellHtmlFromEntry =
-                .iconSpriteColorPercent
-                    >> Maybe.map
-                        (\colorPercent ->
-                            Html.div
-                                [ HA.style "background-color" (cssColorFromColorPercent colorPercent)
-                                , HA.style "width" "10px"
-                                , HA.style "height" "10px"
-                                ]
-                                []
-                        )
-                    >> Maybe.withDefault (Html.text "")
-            }
-
-        columns =
-            iconColumn :: columnsFromHeaders
-
-        headersHtml =
-            columns
-                |> List.map (.header >> Html.text >> List.singleton >> Html.td [])
-                |> Html.tr []
-
-        entriesHtml =
-            overviewWindow.entries
-                |> List.map
-                    (\overviewEntry ->
-                        let
-                            bgFillsColors =
-                                overviewEntry.bgColorFillsPercent
-                                    |> List.map
-                                        (\colorPercent ->
-                                            let
-                                                colorString =
-                                                    ([ colorPercent.r, colorPercent.g, colorPercent.b ]
-                                                        |> List.map (\percent -> ((percent * 255) // 100) |> String.fromInt)
-                                                    )
-                                                        ++ [ (colorPercent.a |> toFloat) / 100 |> String.fromFloat ]
-                                                        |> String.join ","
-                                            in
-                                            "rgba(" ++ colorString ++ ")"
-                                        )
-
-                            columnsHtml =
-                                columns
-                                    |> List.map
-                                        (\column -> [ overviewEntry |> column.cellHtmlFromEntry ] |> Html.td [])
-
-                            inputHtml =
-                                maybeInputOfferHtml (maybeInputRouteConfig |> Maybe.map inputRouteFromInputConfig) [ MouseClickLeft, MouseClickRight ] overviewEntry.uiTreeNode
-                        in
-                        (columnsHtml ++ [ inputHtml ])
-                            |> Html.tr [ HA.style "background" (bgFillsColors |> String.join " ") ]
-                    )
+        context =
+            viewContextFromInputRouteConfig maybeInputRouteConfig 3
     in
-    headersHtml
-        :: entriesHtml
-        |> Html.table []
+    overviewWindows
+        |> List.filter (.uiNode >> Frontend.View.Common.isVisible)
+        |> List.concatMap
+            (\overviewWindow ->
+                [ Frontend.View.Overview.view context overviewWindow
+                , verticalSpacerFromHeightInEm 0.5
+                ]
+            )
 
 
 cssColorFromColorPercent : EveOnline.ParseUserInterface.ColorComponents -> String
@@ -2264,35 +2186,9 @@ parseMemoryReadingFromJson =
                         :: (uiTreeWithDisplayRegion |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion)
                         |> List.map (\uiNodeWithRegion -> ( uiNodeWithRegion.uiNode.pythonObjectAddress, uiNodeWithRegion ))
                         |> Dict.fromList
-                , overviewWindows = parsedUserInterface.overviewWindows |> List.map parseOverviewWindow
                 , parsedUserInterface = parsedUserInterface
                 }
             )
-
-
-parseOverviewWindow : EveOnline.ParseUserInterface.OverviewWindow -> OverviewWindow
-parseOverviewWindow overviewWindow =
-    let
-        mapEntry originalEntry =
-            { uiTreeNode = originalEntry.uiNode
-            , cellsContents = originalEntry.cellsTexts
-            , iconSpriteColorPercent = originalEntry.iconSpriteColorPercent
-            , bgColorFillsPercent = originalEntry.bgColorFillsPercent
-            }
-
-        headers =
-            overviewWindow.entriesHeaders
-                |> List.sortBy (Tuple.second >> .totalDisplayRegion >> .x)
-                |> List.map Tuple.first
-
-        entries =
-            overviewWindow.entries
-                |> List.sortBy (.uiNode >> .totalDisplayRegion >> .y)
-                |> List.map mapEntry
-    in
-    { headers = headers
-    , entries = entries
-    }
 
 
 globalStylesHtmlElement : Html.Html a

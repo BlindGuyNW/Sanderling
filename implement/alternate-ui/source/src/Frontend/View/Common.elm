@@ -2,6 +2,7 @@ module Frontend.View.Common exposing
     ( Action
     , Context
     , Entry
+    , actionButtons
     , actionList
     , activate
     , heading
@@ -150,35 +151,46 @@ collapseEntriesSharingRegion entries =
         |> List.reverse
 
 
+{-| The buttons for what can be done to one thing, named after the thing they act on.
+
+Lists are not the only shape a view takes -- the overview is a table, because its columns are
+what the player compares entries by -- so this is separate from `actionList`, to keep every
+button on the page labelled the same way wherever it ends up.
+
+When there is no input route the result is empty. Callers that lay out columns should use that
+to leave the column out altogether, rather than emitting a column of empty cells.
+
+-}
+actionButtons : Context event -> String -> List Action -> List (Html.Html event)
+actionButtons context subject actions =
+    case context.inputRoute of
+        Nothing ->
+            []
+
+        Just inputRoute ->
+            actions
+                |> List.map
+                    (\action ->
+                        Html.button
+                            [ HE.onClick (inputRoute action.uiNode action.input)
+
+                            {-
+                               The button says only what it does, and names what it acts on
+                               to a screen reader separately. Putting the whole label in the
+                               button text reads the entry three times over, and some of
+                               these labels are a paragraph long.
+                            -}
+                            , Html.Attributes.Aria.ariaLabel (action.label ++ " " ++ shortened subject)
+                            ]
+                            [ Html.text action.label ]
+                    )
+
+
 entryHtml : Context event -> Entry -> Html.Html event
 entryHtml context entry =
-    let
-        actionsHtml =
-            case context.inputRoute of
-                Nothing ->
-                    []
-
-                Just inputRoute ->
-                    entry.actions
-                        |> List.map
-                            (\action ->
-                                Html.button
-                                    [ HE.onClick (inputRoute action.uiNode action.input)
-
-                                    {-
-                                       The button says only what it does, and names what it acts on
-                                       to a screen reader separately. Putting the whole label in the
-                                       button text reads the entry three times over, and some of
-                                       these labels are a paragraph long.
-                                    -}
-                                    , Html.Attributes.Aria.ariaLabel (action.label ++ " " ++ shortened entry.label)
-                                    ]
-                                    [ Html.text action.label ]
-                            )
-    in
     Html.li
         [ HA.style "margin" "0.2em 0" ]
-        (Html.text entry.label :: actionsHtml)
+        (Html.text entry.label :: actionButtons context entry.label entry.actions)
 
 
 {-| Enough of a label to tell one entry from its neighbours, for places where repeating the whole
