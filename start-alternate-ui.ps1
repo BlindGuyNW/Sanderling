@@ -103,8 +103,13 @@ $pineProcess = Start-Process -FilePath 'pine' `
     -ArgumentList @(
         'run-server',
         "--process-store=$storePath",
-        "--admin-urls=http://*:$($Port + 20000)",
-        "--public-urls=http://*:$Port",
+        <#
+        Bind to localhost, NOT the wildcard that upstream's run-alternate-ui.ps1 uses.
+        This UI can send mouse and keyboard input to the game client, so serving it on
+        every interface hands that capability to anything else on the network.
+        #>
+        "--admin-urls=http://localhost:$($Port + 20000)",
+        "--public-urls=http://localhost:$Port",
         #  A store with no previous deployment refuses a plain --deploy ("No app config before").
         '--delete-previous-process',
         "--deploy=$sourcePath"
