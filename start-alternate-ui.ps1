@@ -99,6 +99,13 @@ Write-Host ""
 
 if (Test-Path $logPath) { Remove-Item $logPath -Force }
 
+<#
+Below: -WindowStyle Hidden, NOT -NoNewWindow. -NoNewWindow leaves pine attached to the
+console this script runs in, and a console window stays open as long as any process is
+attached to it - so afterwards `exit` closes the shell but leaves a dead window behind
+until the server is stopped. Hidden gives pine its own invisible console, freeing the
+terminal the moment this script returns; output still goes to the log either way.
+#>
 $pineProcess = Start-Process -FilePath 'pine' `
     -ArgumentList @(
         'run-server',
@@ -114,7 +121,7 @@ $pineProcess = Start-Process -FilePath 'pine' `
         '--delete-previous-process',
         "--deploy=$sourcePath"
     ) `
-    -PassThru -NoNewWindow `
+    -PassThru -WindowStyle Hidden `
     -RedirectStandardOutput $logPath `
     -RedirectStandardError "$logPath.err"
 
