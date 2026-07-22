@@ -100,7 +100,17 @@ Three non-obvious constraints on the message path, all established by measuring 
 
 A minimized client cannot be driven at all, and `ShowWindow(SW_SHOWNOACTIVATE)` restores it but still pulls the foreground; that path is unsolved.
 
-**Debugging effects without the browser.** `POST http://localhost/api` on the running backend is a full control loop — the same endpoint the frontend uses. Pine's generated converters encode a tag as `{"Tag":[arg, ...]}` (arguments always array-wrapped), and `returnValueToString.Just[0]` is itself a JSON string needing a second parse. Sequence: `ListGameClientProcessesRequest` → `SearchUIRootAddress` (poll until completed) → `ReadFromWindow`. Useful oracle for "did that effect land": the count and rects of `WindowUnderlay` nodes, or `l_menu`'s descendants for context menus. To test a `.csx` change without disturbing a running instance, deploy a second one: `pine run-server --process-store=<tmp> --admin-urls="http://*:4100" --public-urls="http://*:8080" --delete-previous-process --deploy=./source/`.
+**Debugging effects without the browser.** `tools/AlternateUiApi.ps1` and `tools/GameWindowProbe.ps1` package this up — dot-source the first to read the live tree and send input, and run the second when input mysteriously stops working (it checks for a minimized window and a cursor outside the client area, the two conditions that silently drop input while the tree keeps reading fine):
+
+```powershell
+. ./tools/AlternateUiApi.ps1
+$ctx = Connect-GameClient
+$before = Get-WindowSignature -Tree (Read-UITree -Context $ctx)
+Send-MouseClick -Context $ctx -X 24 -Y 72
+Compare-WindowSignature -Before $before -After (Get-WindowSignature -Tree (Read-UITree -Context $ctx))
+```
+
+The underlying protocol, if you need it directly: `POST http://localhost/api` on the running backend is a full control loop — the same endpoint the frontend uses. Pine's generated converters encode a tag as `{"Tag":[arg, ...]}` (arguments always array-wrapped), and `returnValueToString.Just[0]` is itself a JSON string needing a second parse. Sequence: `ListGameClientProcessesRequest` → `SearchUIRootAddress` (poll until completed) → `ReadFromWindow`. Useful oracle for "did that effect land": the count and rects of `WindowUnderlay` nodes, or `l_menu`'s descendants for context menus. To test a `.csx` change without disturbing a running instance, deploy a second one: `pine run-server --process-store=<tmp> --admin-urls="http://*:4100" --public-urls="http://*:8080" --delete-previous-process --deploy=./source/`.
 
 **Line endings.** `.editorconfig` sets `end_of_line = lf` for all files, and CI sets `core.autocrlf false` before checkout. On Windows, avoid tooling that rewrites files to CRLF.
 
