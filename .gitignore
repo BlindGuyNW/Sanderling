@@ -1,0 +1,5 @@
+# Captured UI-tree readings used for ad-hoc debugging. Large, machine-specific,
+# and superseded by whatever the client shows next - keep them out of history.
+# Reproducible parser cases belong in
+# implement/alternate-ui/source/tests/ParseMemoryReadingTest.elm instead.
+/readings/
