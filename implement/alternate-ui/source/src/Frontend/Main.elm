@@ -349,7 +349,7 @@ update event stateBefore =
                                 (InterfaceToFrontendClient.RunInVolatileProcessRequest
                                     (EveOnline.VolatileProcessInterface.EffectSequenceOnWindow
                                         { windowId = sendInput.windowId
-                                        , bringWindowToForeground = True
+                                        , bringWindowToForeground = False
                                         , task =
                                             volatileProcessInterfaceEffects
                                                 |> List.map (effectOnWindowAsVolatileHostEffectOnWindow >> EveOnline.VolatileProcessInterface.Effect)
@@ -957,18 +957,48 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                 ViewAlternateUI ->
                     continueWithTitle
                         "Using the Alternate UI"
-                        [ [ (String.fromInt (List.length memoryReading.overviewWindows) ++ " Overview windows")
-                                |> Html.text
-                          ]
-                            |> Html.h3 []
-                        , memoryReading.overviewWindows
-                            |> List.map (displayReadOverviewWindow maybeInputRoute)
-                            |> List.intersperse (verticalSpacerFromHeightInEm 1)
-                            |> Html.div []
-                        , verticalSpacerFromHeightInEm 0.5
-                        , [ ((memoryReading.parsedUserInterface.contextMenus |> List.length |> String.fromInt) ++ " Context menus") |> Html.text ] |> Html.h3 []
-                        , displayParsedContextMenus maybeInputRoute memoryReading.parsedUserInterface.contextMenus
-                        ]
+                        ([ displayOrientation maybeInputRoute memoryReading.parsedUserInterface
+                         , verticalSpacerFromHeightInEm 0.5
+                         ]
+                            ++ (case memoryReading.parsedUserInterface.neocom of
+                                    Nothing ->
+                                        []
+
+                                    Just neocom ->
+                                        [ displayNeocom maybeInputRoute neocom
+                                        , verticalSpacerFromHeightInEm 0.5
+                                        ]
+                               )
+                            ++ (memoryReading.parsedUserInterface.inventoryWindows
+                                    |> List.concatMap
+                                        (\inventoryWindow ->
+                                            [ displayReadInventoryWindow maybeInputRoute inventoryWindow
+                                            , verticalSpacerFromHeightInEm 0.5
+                                            ]
+                                        )
+                               )
+                            ++ (case memoryReading.parsedUserInterface.stationWindow of
+                                    Nothing ->
+                                        []
+
+                                    Just stationWindow ->
+                                        [ displayReadStationWindow maybeInputRoute stationWindow
+                                        , verticalSpacerFromHeightInEm 0.5
+                                        ]
+                               )
+                            ++ [ [ (String.fromInt (List.length memoryReading.overviewWindows) ++ " Overview windows")
+                                    |> Html.text
+                                 ]
+                                    |> Html.h3 []
+                               , memoryReading.overviewWindows
+                                    |> List.map (displayReadOverviewWindow maybeInputRoute)
+                                    |> List.intersperse (verticalSpacerFromHeightInEm 1)
+                                    |> Html.div []
+                               , verticalSpacerFromHeightInEm 0.5
+                               , [ ((memoryReading.parsedUserInterface.contextMenus |> List.length |> String.fromInt) ++ " Context menus") |> Html.text ] |> Html.h3 []
+                               , displayParsedContextMenus maybeInputRoute memoryReading.parsedUserInterface.contextMenus
+                               ]
+                        )
 
                 ViewUITree ->
                     continueWithTitle
@@ -997,6 +1027,328 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
     , visualSectionHtml |> Html.div []
     ]
         |> Html.div []
+
+
+displayReadInventoryWindow : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.InventoryWindow -> Html.Html Event
+displayReadInventoryWindow maybeInputRouteConfig inventoryWindow =
+    let
+        maybeInputRoute =
+            maybeInputRouteConfig |> Maybe.map inputRouteFromInputConfig
+
+        capacityText =
+            case inventoryWindow.selectedContainerCapacityGauge of
+                Nothing ->
+                    "Capacity unknown"
+
+                Just (Err error) ->
+                    "Capacity unreadable: " ++ error
+
+                Just (Ok gauge) ->
+                    let
+                        maximumText =
+                            case gauge.maximum of
+                                Nothing ->
+                                    ""
+
+                                Just maximum ->
+                                    " of " ++ String.fromInt maximum
+                    in
+                    "Capacity used: " ++ String.fromInt gauge.used ++ maximumText ++ " m3"
+
+        itemRowHtml item =
+            let
+                labelText =
+                    case ( item.name, item.quantity ) of
+                        ( Just name, Just quantity ) ->
+                            if 1 < quantity then
+                                name ++ " (" ++ String.fromInt quantity ++ ")"
+
+                            else
+                                name
+
+                        ( Just name, Nothing ) ->
+                            name
+
+                        ( Nothing, _ ) ->
+                            "Unnamed item"
+
+                actionsHtml =
+                    case maybeInputRoute of
+                        Nothing ->
+                            []
+
+                        Just inputRoute ->
+                            [ [ "Select" |> Html.text ]
+                                |> Html.button [ HE.onClick (inputRoute item.uiNode MouseClickLeft) ]
+                            , [ "Menu" |> Html.text ]
+                                |> Html.button [ HE.onClick (inputRoute item.uiNode MouseClickRight) ]
+                            ]
+            in
+            ((labelText |> Html.text) :: actionsHtml)
+                |> Html.li [ HA.style "margin" "0.2em 0" ]
+
+        itemsHtml =
+            if inventoryWindow.items == [] then
+                [ [ "No items read from this container." |> Html.text ] |> Html.p [] ]
+
+            else
+                [ inventoryWindow.items
+                    |> List.map itemRowHtml
+                    |> Html.ul [ HA.style "list-style" "none", HA.style "padding-inline-start" "0" ]
+                ]
+    in
+    ([ [ "Inventory" |> Html.text ] |> Html.h3 []
+     , [ capacityText |> Html.text ] |> Html.p []
+     ]
+        ++ itemsHtml
+    )
+        |> Html.div []
+
+
+displayNeocom : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.Neocom -> Html.Html Event
+displayNeocom maybeInputRouteConfig neocom =
+    let
+        maybeInputRoute =
+            maybeInputRouteConfig |> Maybe.map inputRouteFromInputConfig
+
+        entriesHtml =
+            neocom.buttons
+                |> List.sortBy (.uiNode >> .totalDisplayRegion >> .y)
+                |> List.map
+                    (\button ->
+                        (case maybeInputRoute of
+                            Nothing ->
+                                [ displayTextForNeocomButtonName button.name |> Html.text ]
+
+                            Just inputRoute ->
+                                [ [ displayTextForNeocomButtonName button.name |> Html.text ]
+                                    |> Html.button [ HE.onClick (inputRoute button.uiNode MouseClickLeft) ]
+                                ]
+                        )
+                            |> Html.li [ HA.style "margin" "0.2em 0" ]
+                    )
+    in
+    [ [ "Neocom" |> Html.text ] |> Html.h3 []
+    , entriesHtml |> Html.ul [ HA.style "list-style" "none", HA.style "padding-inline-start" "0" ]
+    ]
+        |> Html.div []
+
+
+{-| Map the internal names of the Neocom buttons to the labels players see in the game client.
+Names observed in a reading from a docked client on 2026-07-21.
+-}
+displayTextForNeocomButtonName : String -> String
+displayTextForNeocomButtonName name =
+    case name of
+        "chat" ->
+            "Chat"
+
+        "charSheetBtn" ->
+            "Character Sheet"
+
+        "eveMenuBtn" ->
+            "EVE Menu"
+
+        "inventory" ->
+            "Inventory"
+
+        "job_board" ->
+            "Job Board"
+
+        "newRedeemableItemsNotification" ->
+            "Redeem Items"
+
+        "skillsBtn" ->
+            "Skills"
+
+        other ->
+            other
+
+
+{-| A short summary of where the player is and what the game is currently asking of them.
+This exists so the page answers "where am I and what now" on every refresh, without having to
+descend into the UI tree to find out.
+-}
+displayOrientation : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.ParsedUserInterface -> Html.Html Event
+displayOrientation maybeInputRouteConfig parsedUserInterface =
+    let
+        maybeInputRoute =
+            maybeInputRouteConfig |> Maybe.map inputRouteFromInputConfig
+
+        maybeLocationInfo =
+            parsedUserInterface.infoPanelContainer
+                |> Maybe.andThen .infoPanelLocationInfo
+
+        locationLines =
+            case maybeLocationInfo of
+                Nothing ->
+                    [ "Location unknown" ]
+
+                Just locationInfo ->
+                    let
+                        systemLine =
+                            case locationInfo.currentSolarSystemName of
+                                Nothing ->
+                                    "Solar system unknown"
+
+                                Just systemName ->
+                                    case locationInfo.securityStatusPercent of
+                                        Nothing ->
+                                            "System: " ++ systemName
+
+                                        Just securityStatusPercent ->
+                                            "System: "
+                                                ++ systemName
+                                                ++ " (security "
+                                                ++ String.fromFloat (toFloat securityStatusPercent / 100)
+                                                ++ ")"
+
+                        stationLines =
+                            case locationInfo.expandedContent |> Maybe.andThen .currentStationName of
+                                Nothing ->
+                                    []
+
+                                Just stationName ->
+                                    [ "Docked at: " ++ stationName ]
+                    in
+                    systemLine :: stationLines
+
+        agentMissionEntries =
+            parsedUserInterface.infoPanelContainer
+                |> Maybe.map .agentMissionEntries
+                |> Maybe.withDefault []
+
+        missionsHtml =
+            if agentMissionEntries == [] then
+                [ [ "No current objective shown by the game." |> Html.text ] |> Html.p [] ]
+
+            else
+                agentMissionEntries
+                    |> List.map
+                        (\entry ->
+                            let
+                                infoHtml =
+                                    entry.infoLines
+                                        |> List.map (\text -> [ text |> Html.text ] |> Html.li [])
+                                        |> Html.ul []
+
+                                actionsHtml =
+                                    case maybeInputRoute of
+                                        Nothing ->
+                                            []
+
+                                        Just inputRoute ->
+                                            [ entry.actions
+                                                |> List.map
+                                                    (\action ->
+                                                        [ [ action.text |> Html.text ]
+                                                            |> Html.button
+                                                                [ HE.onClick (inputRoute action.uiNode MouseClickLeft) ]
+                                                        ]
+                                                            |> Html.li [ HA.style "margin" "0.2em 0" ]
+                                                    )
+                                                |> Html.ul
+                                                    [ HA.style "list-style" "none"
+                                                    , HA.style "padding-inline-start" "0"
+                                                    ]
+                                            ]
+                            in
+                            (infoHtml :: actionsHtml) |> Html.div []
+                        )
+    in
+    [ [ "Where you are" |> Html.text ] |> Html.h3 []
+    , locationLines
+        |> List.map (\line -> [ line |> Html.text ] |> Html.li [])
+        |> Html.ul []
+    , [ "What the game is asking of you" |> Html.text ] |> Html.h3 []
+    , missionsHtml |> Html.div []
+    ]
+        |> Html.div []
+
+
+displayReadStationWindow : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.StationWindow -> Html.Html Event
+displayReadStationWindow maybeInputRouteConfig stationWindow =
+    let
+        maybeInputRoute =
+            maybeInputRouteConfig |> Maybe.map inputRouteFromInputConfig
+
+        entryHtml labelText uiNode =
+            (case maybeInputRoute of
+                Nothing ->
+                    [ labelText |> Html.text ]
+
+                Just inputRoute ->
+                    [ [ labelText |> Html.text ]
+                        |> Html.button [ HE.onClick (inputRoute uiNode MouseClickLeft) ]
+                    ]
+            )
+                |> Html.li [ HA.style "margin" "0.2em 0" ]
+
+        undockEntriesHtml =
+            case stationWindow.abortUndockButton of
+                Just abortUndockButton ->
+                    [ entryHtml "Abort undock" abortUndockButton ]
+
+                Nothing ->
+                    case stationWindow.undockButton of
+                        Just undockButton ->
+                            [ entryHtml "Undock" undockButton ]
+
+                        Nothing ->
+                            []
+
+        serviceEntriesHtml =
+            stationWindow.serviceButtons
+                |> List.map
+                    (\serviceButton ->
+                        entryHtml (displayTextForStationServiceName serviceButton.name) serviceButton.uiNode
+                    )
+    in
+    [ [ "Station" |> Html.text ] |> Html.h3 []
+    , (undockEntriesHtml ++ serviceEntriesHtml)
+        |> Html.ul [ HA.style "list-style" "none", HA.style "padding-inline-start" "0" ]
+    ]
+        |> Html.div []
+
+
+{-| Map the internal names of the station service buttons to the labels players see in the game client.
+Names observed in a reading from a docked client on 2026-07-21.
+-}
+displayTextForStationServiceName : String -> String
+displayTextForStationServiceName name =
+    case name of
+        "charcustomization" ->
+            "Character Customization"
+
+        "fitting" ->
+            "Fitting"
+
+        "industry" ->
+            "Industry"
+
+        "insurance" ->
+            "Insurance"
+
+        "lpstore" ->
+            "LP Store"
+
+        "market" ->
+            "Market"
+
+        "medical" ->
+            "Medical"
+
+        "navyoffices" ->
+            "Navy Offices"
+
+        "repairshop" ->
+            "Repair Shop"
+
+        "reprocessingPlant" ->
+            "Reprocessing Plant"
+
+        other ->
+            other
 
 
 displayReadOverviewWindow : Maybe InputRouteConfig -> OverviewWindow -> Html.Html Event

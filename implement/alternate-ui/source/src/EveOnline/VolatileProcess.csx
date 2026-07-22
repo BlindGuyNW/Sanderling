@@ -433,8 +433,17 @@ void ExecuteEffectOnWindow(
     IntPtr windowHandle,
     bool bringWindowToForeground)
 {
-    if (bringWindowToForeground)
-        BotEngine.WinApi.User32.SetForegroundWindow(windowHandle);
+    if (!bringWindowToForeground)
+    {
+        /*
+        Deliver via window messages, which does not require the window to be in the foreground.
+        See the comment on InputViaWindowMessages for the constraints this path depends on.
+        */
+        ExecuteEffectOnWindowViaMessages(effectOnWindow, windowHandle);
+        return;
+    }
+
+    BotEngine.WinApi.User32.SetForegroundWindow(windowHandle);
 
     if (effectOnWindow?.MouseMoveTo != null)
     {
@@ -478,6 +487,43 @@ void ExecuteEffectOnWindow(
         (MouseActionForKeyUpOrDown(keyCode: virtualKeyCode, buttonUp: true)
         ??
         (() => new WindowsInput.InputSimulator().Keyboard.KeyUp(virtualKeyCode)))();
+    }
+}
+
+void ExecuteEffectOnWindowViaMessages(
+    Request.EffectOnWindowStructure effectOnWindow,
+    IntPtr windowHandle)
+{
+    if (effectOnWindow?.MouseMoveTo != null)
+    {
+        InputViaWindowMessages.MouseMoveTo(
+            windowHandle,
+            (int)effectOnWindow.MouseMoveTo.location.x,
+            (int)effectOnWindow.MouseMoveTo.location.y);
+    }
+
+    /*
+    The interface models a mouse click as a key down/up on the LBUTTON/RBUTTON virtual key codes,
+    so those have to be split back out into mouse messages here.
+    */
+    if (effectOnWindow?.KeyDown != null)
+    {
+        var virtualKeyCode = effectOnWindow.KeyDown.virtualKeyCode;
+
+        if (InputViaWindowMessages.IsMouseButton(virtualKeyCode))
+            InputViaWindowMessages.MouseButtonDown(windowHandle, virtualKeyCode);
+        else
+            InputViaWindowMessages.KeyDown(windowHandle, virtualKeyCode);
+    }
+
+    if (effectOnWindow?.KeyUp != null)
+    {
+        var virtualKeyCode = effectOnWindow.KeyUp.virtualKeyCode;
+
+        if (InputViaWindowMessages.IsMouseButton(virtualKeyCode))
+            InputViaWindowMessages.MouseButtonUp(windowHandle, virtualKeyCode);
+        else
+            InputViaWindowMessages.KeyUp(windowHandle, virtualKeyCode);
     }
 }
 
@@ -596,6 +642,191 @@ static public class WinApi
 
     [DllImport("user32.dll", SetLastError = true)]
     static public extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static public extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    static public extern bool GetCursorPos(out Point lpPoint);
+
+    [DllImport("user32.dll")]
+    static public extern bool GetClientRect(IntPtr hWnd, ref Rect rect);
+
+    [DllImport("user32.dll")]
+    static public extern uint MapVirtualKey(uint code, uint mapType);
+}
+
+/*
+Delivers input by posting window messages instead of moving the real cursor and synthesizing global
+input. This is what lets the alternative UI act on the game client without bringing its window to the
+foreground, so the user keeps keyboard focus in the browser (and in their screen reader).
+
+Measured against a live client on 2026-07-21; two constraints found empirically:
+
+1. Mouse messages are only processed while the real cursor sits inside the window's *client* area.
+   Focus does not matter, but cursor geometry does: with the cursor over the title bar or the window
+   border, every posted click is discarded. Keyboard messages are not affected by this.
+
+2. A button-down posted immediately after a move is discarded, because the client hit-tests the click
+   against the pointer position it held on its previous frame. 0 ms fails; >= 60 ms works.
+
+Note also that the client derives the typed character from WM_KEYDOWN by itself, so we must not also
+post WM_CHAR - doing so enters every character twice.
+*/
+static public class InputViaWindowMessages
+{
+    const uint WM_MOUSEMOVE = 0x0200;
+    const uint WM_LBUTTONDOWN = 0x0201;
+    const uint WM_LBUTTONUP = 0x0202;
+    const uint WM_RBUTTONDOWN = 0x0204;
+    const uint WM_RBUTTONUP = 0x0205;
+    const uint WM_KEYDOWN = 0x0100;
+    const uint WM_KEYUP = 0x0101;
+
+    const int MK_LBUTTON = 0x0001;
+    const int MK_RBUTTON = 0x0002;
+
+    const int VK_LBUTTON = 0x01;
+    const int VK_RBUTTON = 0x02;
+
+    static public int MinMillisecondsFromMouseMoveToButtonDown = 80;
+
+    static readonly object mutex = new object();
+
+    static WinApi.Point lastMouseLocation = new WinApi.Point(0, 0);
+
+    static readonly System.Diagnostics.Stopwatch sinceLastMouseMove = new System.Diagnostics.Stopwatch();
+
+    static int mouseButtonsDown = 0;
+
+    static IntPtr LParamFromLocation(int x, int y) =>
+        new IntPtr((long)((((uint)y & 0xFFFF) << 16) | ((uint)x & 0xFFFF)));
+
+    static IntPtr LParamForKey(int virtualKeyCode, bool keyUp)
+    {
+        var scanCode = WinApi.MapVirtualKey((uint)virtualKeyCode, 0);
+
+        //  Repeat count 1, plus the scan code. On key-up also set the transition and previous-state bits.
+        var lParam = 1u | (scanCode << 16);
+
+        if (keyUp)
+            lParam |= 0xC0000000u;
+
+        return new IntPtr((long)lParam);
+    }
+
+    static public bool IsMouseButton(int virtualKeyCode) =>
+        virtualKeyCode == VK_LBUTTON || virtualKeyCode == VK_RBUTTON;
+
+    /*
+    Only moves the real cursor when it is outside the client area, so in the common case (the game
+    window covering the screen) this is a no-op and the user's pointer is left alone.
+    */
+    static public void EnsureCursorInsideClientArea(IntPtr windowHandle)
+    {
+        var clientRect = new WinApi.Rect();
+
+        if (!WinApi.GetClientRect(windowHandle, ref clientRect))
+            return;
+
+        if (clientRect.right <= 0 || clientRect.bottom <= 0)
+            return; //  Minimized: there is no client area to park the cursor in.
+
+        var topLeft = new WinApi.Point(0, 0);
+        var bottomRight = new WinApi.Point(clientRect.right, clientRect.bottom);
+
+        if (!WinApi.ClientToScreen(windowHandle, ref topLeft))
+            return;
+
+        if (!WinApi.ClientToScreen(windowHandle, ref bottomRight))
+            return;
+
+        if (!WinApi.GetCursorPos(out var cursor))
+            return;
+
+        var alreadyInside =
+            topLeft.x <= cursor.x && cursor.x < bottomRight.x &&
+            topLeft.y <= cursor.y && cursor.y < bottomRight.y;
+
+        if (alreadyInside)
+            return;
+
+        WinApi.SetCursorPos(
+            (topLeft.x + bottomRight.x) / 2,
+            (topLeft.y + bottomRight.y) / 2);
+    }
+
+    static public void MouseMoveTo(IntPtr windowHandle, int x, int y)
+    {
+        lock (mutex)
+        {
+            EnsureCursorInsideClientArea(windowHandle);
+
+            lastMouseLocation = new WinApi.Point(x, y);
+
+            WinApi.PostMessage(
+                windowHandle, WM_MOUSEMOVE, new IntPtr(mouseButtonsDown), LParamFromLocation(x, y));
+
+            sinceLastMouseMove.Restart();
+        }
+    }
+
+    static public void MouseButtonDown(IntPtr windowHandle, int virtualKeyCode)
+    {
+        lock (mutex)
+        {
+            WaitForClientToPickUpMouseMove();
+
+            var isLeft = virtualKeyCode == VK_LBUTTON;
+
+            mouseButtonsDown |= isLeft ? MK_LBUTTON : MK_RBUTTON;
+
+            WinApi.PostMessage(
+                windowHandle,
+                isLeft ? WM_LBUTTONDOWN : WM_RBUTTONDOWN,
+                new IntPtr(mouseButtonsDown),
+                LParamFromLocation(lastMouseLocation.x, lastMouseLocation.y));
+        }
+    }
+
+    static public void MouseButtonUp(IntPtr windowHandle, int virtualKeyCode)
+    {
+        lock (mutex)
+        {
+            var isLeft = virtualKeyCode == VK_LBUTTON;
+
+            mouseButtonsDown &= ~(isLeft ? MK_LBUTTON : MK_RBUTTON);
+
+            WinApi.PostMessage(
+                windowHandle,
+                isLeft ? WM_LBUTTONUP : WM_RBUTTONUP,
+                new IntPtr(mouseButtonsDown),
+                LParamFromLocation(lastMouseLocation.x, lastMouseLocation.y));
+        }
+    }
+
+    static public void KeyDown(IntPtr windowHandle, int virtualKeyCode)
+    {
+        WinApi.PostMessage(
+            windowHandle, WM_KEYDOWN, new IntPtr(virtualKeyCode), LParamForKey(virtualKeyCode, false));
+    }
+
+    static public void KeyUp(IntPtr windowHandle, int virtualKeyCode)
+    {
+        WinApi.PostMessage(
+            windowHandle, WM_KEYUP, new IntPtr(virtualKeyCode), LParamForKey(virtualKeyCode, true));
+    }
+
+    static void WaitForClientToPickUpMouseMove()
+    {
+        if (!sinceLastMouseMove.IsRunning)
+            return;
+
+        var remaining = MinMillisecondsFromMouseMoveToButtonDown - (int)sinceLastMouseMove.ElapsedMilliseconds;
+
+        if (0 < remaining)
+            System.Threading.Thread.Sleep(remaining);
+    }
 }
 
 static public class SetForegroundWindowInWindows

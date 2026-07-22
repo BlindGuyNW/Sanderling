@@ -200,6 +200,30 @@ type alias InfoPanelContainer =
     , infoPanelLocationInfo : Maybe InfoPanelLocationInfo
     , infoPanelRoute : Maybe InfoPanelRoute
     , infoPanelAgentMissions : Maybe InfoPanelAgentMissions
+    , agentMissionEntries : List AgentMissionEntry
+    }
+
+
+{-| An entry in the agent missions / opportunities info panel, as found in readings from 2026-07.
+The node type `InfoPanelAgentMissions` that `infoPanelAgentMissions` looks for was absent from
+those readings, so this reads the `AgentMissionInfoPanelEntry` nodes directly instead.
+The texts are ordered outermost first, for example:
+"Data Site Scanning (3 of 5)", "Fit to Ship", "Scan Probe Launcher", "Data Analyzer".
+-}
+type alias AgentMissionEntry =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , infoLines : List String
+    , actions : List AgentMissionAction
+    }
+
+
+{-| A control within an agent mission entry, such as "Set Destination" or "View Details".
+Separated from the plain text so that a presentation layer can offer only the real controls as
+buttons, instead of turning every line of the mission description into one.
+-}
+type alias AgentMissionAction =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , text : String
     }
 
 
@@ -397,6 +421,13 @@ type alias StationWindow =
     { uiNode : UITreeNodeWithDisplayRegion
     , undockButton : Maybe UITreeNodeWithDisplayRegion
     , abortUndockButton : Maybe UITreeNodeWithDisplayRegion
+    , serviceButtons : List StationServiceButton
+    }
+
+
+type alias StationServiceButton =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , name : String
     }
 
 
@@ -406,8 +437,24 @@ type alias InventoryWindow =
     , subCaptionLabelText : Maybe String
     , selectedContainerCapacityGauge : Maybe (Result String InventoryWindowCapacityGauge)
     , selectedContainerInventory : Maybe Inventory
+    , items : List InventoryItem
     , buttonToSwitchToListView : Maybe UITreeNodeWithDisplayRegion
     , buttonToStackAll : Maybe UITreeNodeWithDisplayRegion
+    }
+
+
+{-| An item in the inventory, read from the `InvItem` nodes.
+
+Unlike `selectedContainerInventory`, this also works while the game client shows the icon view
+rather than the list view: in the icon view the item name is still present in a `Label` node and
+the quantity in a sibling label. That matters because switching the game client to the list view
+is itself a UI interaction we would rather not require first.
+
+-}
+type alias InventoryItem =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , name : Maybe String
+    , quantity : Maybe Int
     }
 
 
@@ -494,7 +541,18 @@ type alias HeatStatusTooltip =
 type alias Neocom =
     { uiNode : UITreeNodeWithDisplayRegion
     , inventoryButton : Maybe UITreeNodeWithDisplayRegion
+    , buttons : List NeocomButton
     , clock : Maybe NeocomClock
+    }
+
+
+{-| A button on the Neocom bar down the left edge of the game client, such as the one opening the
+inventory or the one opening the EVE menu. The `name` is the internal name from `_name`, for
+example "inventory" or "eveMenuBtn".
+-}
+type alias NeocomButton =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , name : String
     }
 
 
@@ -787,6 +845,7 @@ parseInfoPanelContainerFromUIRoot uiTreeRoot =
                 , infoPanelLocationInfo = parseInfoPanelLocationInfoFromInfoPanelContainer containerNode
                 , infoPanelRoute = parseInfoPanelRouteFromInfoPanelContainer containerNode
                 , infoPanelAgentMissions = parseInfoPanelAgentMissionsFromInfoPanelContainer containerNode
+                , agentMissionEntries = parseAgentMissionEntriesFromInfoPanelContainer containerNode
                 }
 
 
@@ -954,6 +1013,74 @@ parseInfoPanelRouteFromInfoPanelContainer infoPanelContainerNode =
                         |> List.map (\uiNode -> { uiNode = uiNode })
             in
             Just { uiNode = infoPanelRouteNode, routeElementMarker = routeElementMarker }
+
+
+parseAgentMissionEntriesFromInfoPanelContainer : UITreeNodeWithDisplayRegion -> List AgentMissionEntry
+parseAgentMissionEntriesFromInfoPanelContainer infoPanelContainerNode =
+    infoPanelContainerNode
+        |> listDescendantsWithDisplayRegion
+        |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "AgentMissionInfoPanelEntry")
+        |> List.map
+            (\entryNode ->
+                let
+                    actions =
+                        entryNode
+                            |> listDescendantsWithDisplayRegion
+                            |> List.filter (.uiNode >> .pythonObjectTypeName >> String.contains "Button")
+                            |> List.filterMap
+                                (\buttonNode ->
+                                    buttonNode
+                                        |> agentMissionActionTextFromButtonNode
+                                        |> Maybe.map (\text -> { uiNode = buttonNode, text = text })
+                                )
+
+                    actionTexts =
+                        actions |> List.map .text
+
+                    infoLines =
+                        entryNode.uiNode
+                            |> getAllContainedDisplayTexts
+                            |> List.map (removeMarkupTags >> String.trim)
+                            |> List.filter (String.isEmpty >> not)
+                            |> List.filter (\text -> not (List.member text actionTexts))
+                in
+                { uiNode = entryNode
+                , infoLines = infoLines
+                , actions = actions
+                }
+            )
+
+
+{-| A label for a control in an agent mission entry. Prefers the text shown in the game client,
+but falls back to the internal node name when the memory reading could not recover the string.
+-}
+agentMissionActionTextFromButtonNode : UITreeNodeWithDisplayRegion -> Maybe String
+agentMissionActionTextFromButtonNode buttonNode =
+    let
+        fromDisplayText =
+            buttonNode.uiNode
+                |> getAllContainedDisplayTexts
+                |> List.map (removeMarkupTags >> String.trim)
+                |> List.filter (String.isEmpty >> not)
+                |> List.filter (String.startsWith "Failed to read" >> not)
+                |> List.head
+    in
+    case fromDisplayText of
+        Just displayText ->
+            Just displayText
+
+        Nothing ->
+            buttonNode.uiNode
+                |> getNameFromDictEntries
+                |> Maybe.map (String.replace "_" " ")
+                |> Maybe.andThen
+                    (\name ->
+                        if String.isEmpty (String.trim name) then
+                            Nothing
+
+                        else
+                            Just (String.trim name)
+                    )
 
 
 parseInfoPanelAgentMissionsFromInfoPanelContainer : UITreeNodeWithDisplayRegion -> Maybe InfoPanelAgentMissions
@@ -2086,11 +2213,24 @@ parseStationWindowFromUITreeRoot uiTreeRoot =
                     findButtonInDescendantsByDisplayTextsPredicate
                         (List.any (String.toLower >> textMatches))
                         windowNode
+
+                serviceButtons =
+                    windowNode
+                        |> listDescendantsWithDisplayRegion
+                        |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "StationServiceBtn")
+                        |> List.filterMap
+                            (\serviceButtonNode ->
+                                serviceButtonNode.uiNode
+                                    |> getNameFromDictEntries
+                                    |> Maybe.map
+                                        (\name -> { uiNode = serviceButtonNode, name = name })
+                            )
             in
             Just
                 { uiNode = windowNode
                 , undockButton = buttonFromDisplayText "undock"
                 , abortUndockButton = buttonFromDisplayText "undocking"
+                , serviceButtons = serviceButtons
                 }
 
 
@@ -2187,9 +2327,49 @@ parseInventoryWindow windowUiNode =
     , subCaptionLabelText = subCaptionLabelText
     , selectedContainerCapacityGauge = selectedContainerCapacityGauge
     , selectedContainerInventory = selectedContainerInventory
+    , items = parseInventoryItems windowUiNode
     , buttonToSwitchToListView = buttonToSwitchToListView
     , buttonToStackAll = buttonToStackAll
     }
+
+
+parseInventoryItems : UITreeNodeWithDisplayRegion -> List InventoryItem
+parseInventoryItems windowUiNode =
+    windowUiNode
+        |> listDescendantsWithDisplayRegion
+        |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "InvItem")
+        |> List.map
+            (\itemNode ->
+                let
+                    textsWithNodes =
+                        itemNode |> getAllContainedDisplayTextsWithRegion
+                in
+                { uiNode = itemNode
+                , name =
+                    textsWithNodes
+                        |> List.filter (Tuple.second >> .uiNode >> .pythonObjectTypeName >> (==) "Label")
+                        |> List.map (Tuple.first >> removeMarkupTags >> String.trim)
+                        |> List.filter (String.isEmpty >> not)
+                        |> List.head
+                , quantity =
+                    textsWithNodes
+                        |> List.map (Tuple.first >> String.trim)
+                        |> List.filterMap String.toInt
+                        |> List.head
+                }
+            )
+
+
+{-| Remove the simple markup tags seen around inventory item names, such as the `<center>` wrapper.
+-}
+removeMarkupTags : String -> String
+removeMarkupTags text =
+    case Regex.fromString "<[^>]*>" of
+        Nothing ->
+            text
+
+        Just regex ->
+            Regex.replace regex (always "") text
 
 
 parseInventory : UITreeNodeWithDisplayRegion -> Inventory
@@ -2947,9 +3127,21 @@ parseNeocom neocomUiNode =
                 |> listDescendantsWithDisplayRegion
                 |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "ButtonInventory")
                 |> List.head
+
+        buttons =
+            neocomUiNode
+                |> listDescendantsWithDisplayRegion
+                |> List.filter (.uiNode >> .pythonObjectTypeName >> String.startsWith "Button")
+                |> List.filterMap
+                    (\buttonNode ->
+                        buttonNode.uiNode
+                            |> getNameFromDictEntries
+                            |> Maybe.map (\name -> { uiNode = buttonNode, name = name })
+                    )
     in
     { uiNode = neocomUiNode
     , inventoryButton = inventoryButton
+    , buttons = buttons
     , clock = clock
     }
 
