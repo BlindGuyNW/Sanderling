@@ -27,6 +27,7 @@ import Frontend.InspectParsedUserInterface
 import Frontend.View.Common
 import Frontend.View.GenericWindow
 import Frontend.View.Overview
+import Frontend.View.ShipUI
 import Html
 import Html.Attributes as HA
 import Html.Attributes.Aria
@@ -950,6 +951,17 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                             ++ [ displayOrientation maybeInputRoute memoryReading.parsedUserInterface
                                , verticalSpacerFromHeightInEm 0.5
                                ]
+                            ++ (case memoryReading.parsedUserInterface.shipUI of
+                                    Nothing ->
+                                        []
+
+                                    Just shipUI ->
+                                        [ Frontend.View.ShipUI.view
+                                            (viewContextFromInputRouteConfig maybeInputRoute 3)
+                                            shipUI
+                                        , verticalSpacerFromHeightInEm 0.5
+                                        ]
+                               )
                             ++ (case memoryReading.parsedUserInterface.neocom of
                                     Nothing ->
                                         []

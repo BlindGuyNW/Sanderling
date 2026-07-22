@@ -389,6 +389,9 @@ treeNodeChildrenFromParsedUserInterfaceShipUI viewConfig parsedUserInterfaceShip
                 , fieldValueSummary = always "..."
                 , fieldValueChildren = treeNodeChildrenFromShipUIHeatGauges viewConfig
                 }
+        , parsedUserInterfaceShipUI.speedText
+            |> Maybe.withDefault ""
+            |> fieldFromString "speedText"
         ]
 
 

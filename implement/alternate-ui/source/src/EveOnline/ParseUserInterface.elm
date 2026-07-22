@@ -116,6 +116,7 @@ type alias ShipUI =
     , stopButton : Maybe UITreeNodeWithDisplayRegion
     , maxSpeedButton : Maybe UITreeNodeWithDisplayRegion
     , heatGauges : Maybe ShipUIHeatGauges
+    , speedText : Maybe String
     }
 
 
@@ -1416,6 +1417,21 @@ parseShipUIFromUITreeRoot uiTreeRoot =
                                 |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "HeatGauges")
                                 |> List.head
                                 |> Maybe.map parseShipUIHeatGaugesFromUINode
+
+                        {-
+                           The client formats the speed itself, units and all, on a label named
+                           `speedLabel` below `SpeedGauge`. Taking that string is better than
+                           deriving a number from the gauge needle's rotation: it is what the
+                           player sees, and it stays correct in whatever locale and unit the
+                           client decides to use.
+                        -}
+                        speedText =
+                            shipUINode
+                                |> listDescendantsWithDisplayRegion
+                                |> List.filter (.uiNode >> getNameFromDictEntries >> (==) (Just "speedLabel"))
+                                |> List.head
+                                |> Maybe.andThen (.uiNode >> getDisplayText)
+                                |> Maybe.andThen discardUnreadableText
                     in
                     maybeHitpointsPercent
                         |> Maybe.map
@@ -1431,6 +1447,7 @@ parseShipUIFromUITreeRoot uiTreeRoot =
                                 , stopButton = descendantNodesFromPythonObjectTypeNameEqual "StopButton" |> List.head
                                 , maxSpeedButton = descendantNodesFromPythonObjectTypeNameEqual "MaxSpeedButton" |> List.head
                                 , heatGauges = heatGauges
+                                , speedText = speedText
                                 }
                             )
 
