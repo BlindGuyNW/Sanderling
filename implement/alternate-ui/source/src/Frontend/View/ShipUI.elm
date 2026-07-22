@@ -8,12 +8,20 @@ nothing here can be read out of the tree as a sentence. Each number below comes 
 different: the hitpoint gauges carry a `_lastValue`, the capacitor is counted in cells, and the
 speed is the one value the client formats into a label of its own.
 
-What is deliberately absent is the name of each module. The client identifies a module button only
-by an item id in `_name` and an icon texture path, and puts the real name in a tooltip that exists
-only while the player is pointing at it. Naming them here would mean either a hand-written table
-of icon paths -- stale the first time CCP re-draws an icon -- or hovering every slot on every
-refresh, which moves the player's cursor. So a module is presented by the slot it sits in, which
-the client does tell us, and the player learns which is which once.
+What is absent for now is the name of each module. The client identifies a module button only by an
+item id in `_name` and an icon texture path, and puts the real name in a tooltip it shows while the
+pointer rests on the slot. So a module is presented by the slot it sits in, which the client does
+tell us, and the player learns which is which once.
+
+That is a starting point rather than a limit. Pointing at a slot does *not* mean moving the
+player's mouse: the input path posts window messages, and the client takes its pointer position
+from those rather than from the real cursor -- measured on 2026-07-22, where the tooltip named
+`Core Probe Launcher I` while the physical cursor sat six hundred pixels away. What it does cost is
+a posted move, a settle of at least 60ms and a tree read per slot, and it overwrites the client's
+single hover slot, replacing whatever tooltip the player was reading. Both are affordable once per
+slot and cached; neither is affordable on every refresh. The alternative -- a table mapping icon
+texture paths to names -- is the kind of debt rule 4 of CONVENTIONS.md warns about, and goes stale
+the first time CCP redraws an icon.
 
 -}
 
