@@ -24,6 +24,8 @@ import Frontend.InspectParsedUserInterface
         , renderTreeNodeFromParsedUserInterface
         , treeViewNodeFromMemoryReadingUITreeNode
         )
+import Frontend.View.Common
+import Frontend.View.GenericWindow
 import Html
 import Html.Attributes as HA
 import Html.Attributes.Aria
@@ -33,6 +35,7 @@ import InterfaceToFrontendClient
 import Json.Decode
 import List.Extra
 import Process
+import Set
 import Svg
 import Svg.Attributes
 import Task
@@ -957,9 +960,10 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                 ViewAlternateUI ->
                     continueWithTitle
                         "Using the Alternate UI"
-                        ([ displayOrientation maybeInputRoute memoryReading.parsedUserInterface
-                         , verticalSpacerFromHeightInEm 0.5
-                         ]
+                        (displayMessageBoxes maybeInputRoute memoryReading.parsedUserInterface.messageBoxes
+                            ++ [ displayOrientation maybeInputRoute memoryReading.parsedUserInterface
+                               , verticalSpacerFromHeightInEm 0.5
+                               ]
                             ++ (case memoryReading.parsedUserInterface.neocom of
                                     Nothing ->
                                         []
@@ -997,7 +1001,9 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                                , verticalSpacerFromHeightInEm 0.5
                                , [ ((memoryReading.parsedUserInterface.contextMenus |> List.length |> String.fromInt) ++ " Context menus") |> Html.text ] |> Html.h3 []
                                , displayParsedContextMenus maybeInputRoute memoryReading.parsedUserInterface.contextMenus
+                               , verticalSpacerFromHeightInEm 0.5
                                ]
+                            ++ displayOtherWindows maybeInputRoute memoryReading.parsedUserInterface
                         )
 
                 ViewUITree ->
@@ -1027,6 +1033,130 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
     , visualSectionHtml |> Html.div []
     ]
         |> Html.div []
+
+
+viewContextFromInputRouteConfig : Maybe InputRouteConfig -> Int -> Frontend.View.Common.Context Event
+viewContextFromInputRouteConfig maybeInputRouteConfig headingLevel =
+    { inputRoute = maybeInputRouteConfig |> Maybe.map inputRouteFromInputConfig
+    , headingLevel = headingLevel
+    }
+
+
+{-| A modal dialog blocks the game client until it is answered, so it comes before everything
+else on the page.
+-}
+displayMessageBoxes : Maybe InputRouteConfig -> List EveOnline.ParseUserInterface.MessageBox -> List (Html.Html Event)
+displayMessageBoxes maybeInputRouteConfig messageBoxes =
+    if List.isEmpty messageBoxes then
+        []
+
+    else
+        let
+            context =
+                viewContextFromInputRouteConfig maybeInputRouteConfig 3
+        in
+        [ Frontend.View.Common.section
+            context
+            "The game is waiting for an answer"
+            (\contextForContent -> messageBoxes |> List.map (displayMessageBox contextForContent))
+        , verticalSpacerFromHeightInEm 0.5
+        ]
+
+
+displayMessageBox : Frontend.View.Common.Context Event -> EveOnline.ParseUserInterface.MessageBox -> Html.Html Event
+displayMessageBox context messageBox =
+    let
+        {-
+           The text of a button sits in nodes below the button, so excluding only the button
+           nodes themselves would still read every button caption twice: once as part of the
+           message, and again on the button.
+        -}
+        buttonAddresses =
+            messageBox.buttons
+                |> List.concatMap
+                    (\button ->
+                        button.uiNode
+                            :: EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion button.uiNode
+                    )
+                |> List.map (.uiNode >> .pythonObjectAddress)
+                |> Set.fromList
+
+        messageLines =
+            messageBox.uiNode
+                |> EveOnline.ParseUserInterface.getAllContainedDisplayTextsWithRegion
+                |> List.filter
+                    (\( _, node ) -> not (Set.member node.uiNode.pythonObjectAddress buttonAddresses))
+                |> List.map (Tuple.first >> Frontend.View.Common.plainText)
+                |> List.filterMap EveOnline.ParseUserInterface.discardUnreadableText
+
+        buttonEntries =
+            messageBox.buttons
+                |> Frontend.View.Common.inReadingOrder
+                |> List.map
+                    (\button ->
+                        { label =
+                            button.mainText
+                                |> Maybe.andThen EveOnline.ParseUserInterface.discardUnreadableText
+                                |> Maybe.withDefault
+                                    (Frontend.View.Common.labelForControl
+                                        Frontend.View.Common.noNameTable
+                                        button.uiNode
+                                    )
+                        , actions = [ Frontend.View.Common.activate button.uiNode ]
+                        }
+                    )
+    in
+    [ Frontend.View.Common.textLines messageLines
+    , Frontend.View.Common.actionList context buttonEntries
+    ]
+        |> Html.div []
+
+
+{-| Every window the game client is showing that does not have a view of its own here, read
+through the generic window shell. Which windows exist and in what order comes from the client's
+own layer stack, so a window we have never seen before still turns up in the right place.
+-}
+displayOtherWindows : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.ParsedUserInterface -> List (Html.Html Event)
+displayOtherWindows maybeInputRouteConfig parsedUserInterface =
+    let
+        context =
+            viewContextFromInputRouteConfig maybeInputRouteConfig 3
+
+        addressesShownSeparately =
+            [ parsedUserInterface.inventoryWindows |> List.map .uiNode
+            , parsedUserInterface.stationWindow |> Maybe.map List.singleton |> Maybe.withDefault [] |> List.map .uiNode
+            , parsedUserInterface.overviewWindows |> List.map .uiNode
+            ]
+                |> List.concat
+                |> List.map (.uiNode >> .pythonObjectAddress)
+                |> Set.fromList
+
+        windowIsShownSeparately window =
+            (window.uiNode :: EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion window.uiNode)
+                |> List.any (\node -> Set.member node.uiNode.pythonObjectAddress addressesShownSeparately)
+
+        windows =
+            EveOnline.ParseUserInterface.layerNamesInPresentationOrder
+                |> List.concatMap
+                    (\layerName ->
+                        parsedUserInterface.layers
+                            |> List.filter (.name >> (==) layerName)
+                            |> List.concatMap EveOnline.ParseUserInterface.parseGenericWindowsFromLayer
+                    )
+                |> List.filter (.uiNode >> Frontend.View.Common.isVisible)
+                |> List.filter (windowIsShownSeparately >> not)
+    in
+    if List.isEmpty windows then
+        []
+
+    else
+        [ Frontend.View.Common.section
+            context
+            "Other windows"
+            (\contextForContent ->
+                windows |> List.map (Frontend.View.GenericWindow.view contextForContent)
+            )
+        ]
 
 
 displayReadInventoryWindow : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.InventoryWindow -> Html.Html Event
@@ -1135,11 +1265,30 @@ displayNeocom maybeInputRouteConfig neocom =
 
 
 {-| Map the internal names of the Neocom buttons to the labels players see in the game client.
-Names observed in a reading from a docked client on 2026-07-21.
+
+The client leaves `_hint` empty on these buttons until the player points at one, so unlike most
+controls there is nothing to read the label from and we have to keep this list. Every entry here
+is a liability: it is in English only, and it goes stale when the client changes. Drop an entry
+as soon as the client is observed to supply the name itself.
+
+Names observed in readings from a docked client on 2026-07-21.
+
 -}
 displayTextForNeocomButtonName : String -> String
 displayTextForNeocomButtonName name =
     case name of
+        "agency" ->
+            "Agency"
+
+        "airCareerProgram" ->
+            "Career Program"
+
+        "assets" ->
+            "Assets"
+
+        "AurumStoreBtnDataNode" ->
+            "Aurum Store"
+
         "chat" ->
             "Chat"
 
@@ -1149,17 +1298,44 @@ displayTextForNeocomButtonName name =
         "eveMenuBtn" ->
             "EVE Menu"
 
+        "fitting" ->
+            "Fitting"
+
+        "help" ->
+            "Help"
+
         "inventory" ->
             "Inventory"
 
         "job_board" ->
             "Job Board"
 
+        "mail" ->
+            "Mail"
+
+        "map_beta" ->
+            "Map"
+
+        "market" ->
+            "Market"
+
         "newRedeemableItemsNotification" ->
             "Redeem Items"
 
+        "omega_upsell_fixed" ->
+            "Omega Offer"
+
+        "ProjectDiscovery" ->
+            "Project Discovery"
+
+        "shipTree" ->
+            "Ship Tree"
+
         "skillsBtn" ->
             "Skills"
+
+        "wallet" ->
+            "Wallet"
 
         other ->
             other

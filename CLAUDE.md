@@ -79,6 +79,12 @@ Elm side (`implement/alternate-ui/source/src/`):
 
 ## Conventions that matter here
 
+**Alternate UI views.** `implement/alternate-ui/CONVENTIONS.md` sets the ground rules for the
+screen-reader-oriented views: order and precedence come from the game client's own layer stack,
+every window renders through the generic shell whether or not it has a specialized view, labels
+come from the client rather than hand-written tables, and heading levels express nesting. Read it
+before adding or changing a view.
+
 **Version pinning across components.** When a new `read-memory-64-bit` release is cut, the alternate UI is moved to it by editing the URL comment and the following `#r "sha256:..."` line at the top of `EveOnline/VolatileProcess.csx` (see commit `5790e12`). Keep these in sync when bumping:
 - `Program.cs` → `AppVersionId`
 - `Common/App.elm` → `versionId`

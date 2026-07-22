@@ -26,6 +26,7 @@ import Set
 
 type alias ParsedUserInterface =
     { uiTree : UITreeNodeWithDisplayRegion
+    , layers : List UILayer
     , contextMenus : List ContextMenu
     , shipUI : Maybe ShipUI
     , targets : List Target
@@ -650,6 +651,42 @@ type alias WindowControls =
     }
 
 
+{-| One of the layers the game client itself stacks its user interface in, identified by the
+`_name` of the `LayerCore` node, such as `l_modal`, `l_menu` or `l_main`. The client uses these
+to decide what is on top of what, so they also tell us what currently has the player's attention.
+-}
+type alias UILayer =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , name : String
+    }
+
+
+{-| A window as the game client builds it, without knowing what kind of window it is.
+
+Every window in `l_main` observed so far has the same shape: a `content` child holding
+`headerParent` and `main`, plus `window_controls_cont` and a `Resizer`. Reading that shape gives
+us the caption the player sees and the header buttons for any window, including the ones we have
+no specialized parse function for.
+
+-}
+type alias GenericWindow =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , typeName : String
+    , name : Maybe String
+    , caption : Maybe String
+    , headerButtons : List LabeledUINode
+    , contentNode : Maybe UITreeNodeWithDisplayRegion
+    }
+
+
+{-| A node the client labels only with a tooltip, such as the window control buttons.
+-}
+type alias LabeledUINode =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , label : Maybe String
+    }
+
+
 parseUITreeWithDisplayRegionFromUITree : EveOnline.MemoryReading.UITreeNode -> UITreeNodeWithDisplayRegion
 parseUITreeWithDisplayRegionFromUITree uiTree =
     let
@@ -667,6 +704,7 @@ parseUITreeWithDisplayRegionFromUITree uiTree =
 parseUserInterfaceFromUITree : UITreeNodeWithDisplayRegion -> ParsedUserInterface
 parseUserInterfaceFromUITree uiTree =
     { uiTree = uiTree
+    , layers = parseLayersFromUITreeRoot uiTree
     , contextMenus = parseContextMenusFromUITreeRoot uiTree
     , shipUI = parseShipUIFromUITreeRoot uiTree
     , targets = parseTargetsFromUITreeRoot uiTree
@@ -698,6 +736,135 @@ parseUserInterfaceFromUITree uiTree =
     , keyActivationWindow = parseKeyActivationWindowFromUITreeRoot uiTree
     , compressionWindow = parseCompressionWindowFromUITreeRoot uiTree
     }
+
+
+{-| The layers the client stacks its user interface in, as the direct `LayerCore` children of the
+UI root. Layers nested deeper, such as `l_view_overlays` below `l_viewstate`, are not included.
+-}
+parseLayersFromUITreeRoot : UITreeNodeWithDisplayRegion -> List UILayer
+parseLayersFromUITreeRoot uiTreeRoot =
+    uiTreeRoot
+        |> listChildrenWithDisplayRegion
+        |> List.filterMap
+            (\child ->
+                case child.uiNode |> getNameFromDictEntries of
+                    Nothing ->
+                        Nothing
+
+                    Just name ->
+                        if child.uiNode.pythonObjectTypeName == "LayerCore" then
+                            Just { uiNode = child, name = name }
+
+                        else
+                            Nothing
+            )
+
+
+{-| The layers worth presenting, ordered by how much of the player's attention they demand.
+A modal dialog blocks the client entirely, an open context menu is waiting for a choice, and only
+then come the ordinary windows and the always-present chrome.
+
+Layers left out here carry nothing the player acts on: `l_hint` and `l_infoBubble` hold tooltips,
+`l_dragging` holds whatever is mid-drag, and `l_mloading` and `l_videoOverlay` hold transitions.
+
+Order and names observed in readings from a docked client on 2026-07-21.
+
+-}
+layerNamesInPresentationOrder : List String
+layerNamesInPresentationOrder =
+    [ "l_modal"
+    , "l_menu"
+    , "l_utilmenu"
+    , "l_main"
+    , "l_abovemain"
+    , "l_alwaysvisible"
+    , "l_viewstate"
+    ]
+
+
+{-| The windows the client is showing in the given layer. The last child of a layer is the one
+drawn on top, so the result is ordered with the topmost window first.
+-}
+parseGenericWindowsFromLayer : UILayer -> List GenericWindow
+parseGenericWindowsFromLayer layer =
+    layer.uiNode
+        |> listChildrenWithDisplayRegion
+        |> List.filterMap parseGenericWindow
+        |> List.reverse
+
+
+parseGenericWindow : UITreeNodeWithDisplayRegion -> Maybe GenericWindow
+parseGenericWindow windowNode =
+    let
+        childNamed name parent =
+            parent
+                |> listChildrenWithDisplayRegion
+                |> List.filter (.uiNode >> getNameFromDictEntries >> (==) (Just name))
+                |> List.head
+    in
+    case windowNode |> childNamed "content" of
+        Nothing ->
+            Nothing
+
+        Just contentNode ->
+            let
+                headerParentNode =
+                    contentNode |> childNamed "headerParent"
+
+                caption =
+                    headerParentNode
+                        |> Maybe.map listDescendantsWithDisplayRegion
+                        |> Maybe.withDefault []
+                        |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "WindowCaption")
+                        |> List.concatMap getAllContainedDisplayTextsWithRegion
+                        |> List.map Tuple.first
+                        |> List.filterMap discardUnreadableText
+                        |> List.head
+
+                headerButtons =
+                    [ windowNode |> childNamed "window_controls_cont", headerParentNode ]
+                        |> List.filterMap identity
+                        |> List.concatMap listDescendantsWithDisplayRegion
+                        |> List.filterMap
+                            (\descendant ->
+                                case descendant.uiNode |> getHintTextFromDictEntries |> Maybe.andThen discardUnreadableText of
+                                    Nothing ->
+                                        Nothing
+
+                                    Just hint ->
+                                        Just { uiNode = descendant, label = Just hint }
+                            )
+            in
+            Just
+                { uiNode = windowNode
+                , typeName = windowNode.uiNode.pythonObjectTypeName
+                , name = windowNode.uiNode |> getNameFromDictEntries
+                , caption = caption
+                , headerButtons = headerButtons
+                , contentNode = contentNode |> childNamed "main"
+                }
+
+
+{-| The memory reading substitutes this text for a string it could not read out of the client.
+Passing it on as if the client had shown it would tell the player something the game never said,
+so it is discarded here and the caller decides what to say about the absence instead.
+-}
+textOfFailedReading : String
+textOfFailedReading =
+    "Failed to read string bytes."
+
+
+discardUnreadableText : String -> Maybe String
+discardUnreadableText text =
+    let
+        trimmed =
+            String.trim text
+    in
+    if trimmed == "" || trimmed == textOfFailedReading then
+        Nothing
+
+    else
+        Just trimmed
 
 
 asUITreeNodeWithDisplayRegion :
