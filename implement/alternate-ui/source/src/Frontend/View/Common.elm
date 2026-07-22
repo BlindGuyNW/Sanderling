@@ -111,8 +111,43 @@ are still presented, only without buttons. Reading a saved reading stays useful.
 actionList : Context event -> List Entry -> Html.Html event
 actionList context entries =
     entries
+        |> collapseEntriesSharingRegion
         |> List.map (entryHtml context)
         |> Html.ul [ HA.style "list-style" "none", HA.style "padding-inline-start" "0" ]
+
+
+{-| The client builds one control as a nest of nodes that all cover the same rectangle: a wrapper,
+the control itself, and a background underlay. Anything that decides "is this a button" by the
+type name matches all three, so a single OK button arrives here three times -- twice reading "OK",
+once reading "underlay", because the underlay holds no text of its own and falls back to its
+internal name.
+
+They are the same pixels, so they are the same control. Only the first survives. Entries that
+carry no action have no rectangle to compare and are always kept.
+
+Collapsing here rather than in each parse function means every list gets it, which matters because
+this nesting is how the client builds controls generally, not something peculiar to message boxes.
+
+-}
+collapseEntriesSharingRegion : List Entry -> List Entry
+collapseEntriesSharingRegion entries =
+    entries
+        |> List.foldl
+            (\entry ( kept, seenRegions ) ->
+                case entry.actions |> List.head |> Maybe.map (.uiNode >> .totalDisplayRegion) of
+                    Nothing ->
+                        ( entry :: kept, seenRegions )
+
+                    Just region ->
+                        if List.member region seenRegions then
+                            ( kept, seenRegions )
+
+                        else
+                            ( entry :: kept, region :: seenRegions )
+            )
+            ( [], [] )
+        |> Tuple.first
+        |> List.reverse
 
 
 entryHtml : Context event -> Entry -> Html.Html event

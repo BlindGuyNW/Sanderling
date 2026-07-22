@@ -24,6 +24,28 @@ because until it is answered the client will ignore everything the player does.
 Do not hand-order sections in the view. A window that appears in a new place on screen should turn
 up in the right place on the page without anyone editing a list.
 
+## 1a. The thing to design against is a client update
+
+`ParseUserInterface.elm` is ours to reshape. There are no external consumers to keep happy -- this
+repo exists to serve the alternate UI, and nothing here needs to stay stable for anyone else.
+
+The pressure that does matter is CCP changing the client. Every parse function keyed to an exact
+`pythonObjectTypeName`, and every hand-written name table, is a thing that breaks on patch day and
+takes a window with it.
+
+So prefer what the client tells us over what we assert about it, in this order:
+
+- Structure the client maintains for its own sake -- the layer stack, the `content` /
+  `headerParent` / `main` window shape -- over a list of type names we wrote down.
+- `_hint` and displayed text over a name table.
+- Degrading over disappearing. This is what rule 2 buys: when a specialized parse function stops
+  matching, the window still renders through the generic shell instead of silently vanishing.
+  A page that gets rougher after a patch is recoverable; a page that goes blank is not.
+
+When a specialized view and the generic shell disagree, the generic shell is the safety net. Do
+not remove a window from the generic path except by adding it to the exclusion in
+`displayOtherWindows`, so that losing the specialized view brings the generic one back.
+
 ## 2. Every window renders, whether or not we have a view for it
 
 Windows in `l_main` are uniform: a `content` child holding `headerParent` and `main`, a
