@@ -44,6 +44,12 @@ type InputOnUINode
          scrolling makes the client build the next rows, and the following reading picks them up.
       -}
     | VerticalScrollPage Int
+      {- Replace the content of a text field of the game client with the given text and press
+         Return: a click to focus the field, End and Backspaces to clear what it holds, one
+         key-down per character, Return to commit. Measured against a live client 2026-07-23 on
+         the market window's search field.
+      -}
+    | TypeTextIntoField String
 
 
 type ParsedUITreeViewPathNode
@@ -107,6 +113,9 @@ displayTextForInputKind inputKind =
 
         VerticalScrollPage _ ->
             "scrollpage"
+
+        TypeTextIntoField _ ->
+            "typetext"
 
 
 renderTreeNodeFromParsedUserInterface :

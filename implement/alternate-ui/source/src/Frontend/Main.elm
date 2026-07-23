@@ -432,6 +432,41 @@ update event stateBefore =
                                         }
                                         |> sequenceElements 100
 
+                                {- Replacing a field's content is a click to focus it, then keys:
+                                   End brings the caret to the end, Backspaces clear what the
+                                   field holds, one key-down per character types the text, and
+                                   Return commits it. Posted modifier keys do not register as
+                                   held -- a posted Ctrl+A typed a literal "a", measured against
+                                   a live client 2026-07-23 -- so there is no select-all, and
+                                   clearing is one Backspace per character of the field's current
+                                   content. The messages are processed in queue order, so the
+                                   caret is always placed before the first key arrives.
+                                -}
+                                TypeTextIntoField typedText ->
+                                    let
+                                        keystroke key =
+                                            [ Common.EffectOnWindow.KeyDown key
+                                            , Common.EffectOnWindow.KeyUp key
+                                            ]
+
+                                        keysToPress =
+                                            Common.EffectOnWindow.vkey_END
+                                                :: List.repeat
+                                                    (charactersToClearFromTextField sendInput.uiNode)
+                                                    Common.EffectOnWindow.vkey_BACK
+                                                ++ (typedText
+                                                        |> String.toList
+                                                        |> List.filterMap Common.EffectOnWindow.virtualKeyCodeForCharacter
+                                                   )
+                                                ++ [ Common.EffectOnWindow.vkey_RETURN ]
+                                    in
+                                    (Common.EffectOnWindow.effectsMouseClickAtLocation
+                                        Common.EffectOnWindow.MouseButtonLeft
+                                        clickLocation
+                                        ++ (keysToPress |> List.concatMap keystroke)
+                                    )
+                                        |> sequenceElements effectSequenceSpacingMilliseconds
+
                         task =
                             case maybeScrollToReveal of
                                 Nothing ->
@@ -487,6 +522,38 @@ this still leaves the node within reach.
 pixelsPerWheelTick : Int
 pixelsPerWheelTick =
     50
+
+
+{-| How many Backspaces clear a text field: the length of the text its `textLabel` child shows.
+The field also holds a `hintTextLabel` -- the placeholder, drawn only while the field is empty --
+whose text is not content and does not count. Content the reading could not recover means an
+unknown length, so a generous fixed count: Backspace in an already-empty field does nothing, so
+overshooting is safe where undershooting leaves old text in front of the new. The few extra on a
+readable length cover characters typed since the reading was taken.
+-}
+charactersToClearFromTextField : EveOnline.ParseUserInterface.UITreeNodeWithDisplayRegion -> Int
+charactersToClearFromTextField fieldNode =
+    case
+        fieldNode
+            |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+            |> List.filter
+                (.uiNode
+                    >> EveOnline.ParseUserInterface.getNameFromDictEntries
+                    >> (==) (Just "textLabel")
+                )
+            |> List.filterMap (.uiNode >> EveOnline.ParseUserInterface.getDisplayText)
+            |> List.head
+    of
+        Nothing ->
+            0
+
+        Just displayText ->
+            case EveOnline.ParseUserInterface.discardUnreadableText displayText of
+                Nothing ->
+                    30
+
+                Just readableText ->
+                    String.length readableText + 4
 
 
 {-| How long to give the game client to complete a scroll before clicking where the node is
@@ -1238,6 +1305,7 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                             ++ [ displayOrientation maybeInputRoute memoryReading.parsedUserInterface
                                , verticalSpacerFromHeightInEm 0.5
                                ]
+                            ++ displayTutorialPointer memoryReading.parsedUserInterface
                             ++ (case memoryReading.parsedUserInterface.shipUI of
                                     Nothing ->
                                         []
@@ -1308,6 +1376,47 @@ viewContextFromInputRouteConfig maybeInputRouteConfig headingLevel =
     { inputRoute = maybeInputRouteConfig |> Maybe.map inputRouteFromInputConfig
     , headingLevel = headingLevel
     }
+
+
+{-| The guidance pointer the game's career program overlays on the screen: an arrow parked at
+some control, with a line like "Click here to open the Industry window". It has nothing to do
+with where the player's cursor or focus is -- the game decides when to show it and what to aim
+it at.
+
+It lives in the `l_hint` layer, which is otherwise tooltips and stays unpresented; before this
+section its text still reached a screen reader through the SVG visualization at the bottom of
+the page, unlabeled, where it read like a focus announcement. The `UiPointer` type name and the
+`l_hint` home were observed 2026-07-23, docked, with the career program's pointer at the station
+services panel.
+
+Read-only on purpose: the pointer names a control that is somewhere else on the page; the thing
+to act on is that control, not the arrow pointing at it.
+
+-}
+displayTutorialPointer : EveOnline.ParseUserInterface.ParsedUserInterface -> List (Html.Html Event)
+displayTutorialPointer parsedUserInterface =
+    case
+        parsedUserInterface.layers
+            |> List.filter (.name >> (==) "l_hint")
+            |> List.concatMap (.uiNode >> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion)
+            |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "UiPointer")
+            |> List.filter Frontend.View.Common.isVisible
+            |> List.concatMap
+                (\pointer ->
+                    pointer
+                        |> EveOnline.ParseUserInterface.getAllContainedDisplayTextsWithRegion
+                        |> List.map (Tuple.first >> Frontend.View.Common.plainText)
+                        |> List.filterMap EveOnline.ParseUserInterface.discardUnreadableText
+                )
+    of
+        [] ->
+            []
+
+        pointerTexts ->
+            [ [ "The game's tutorial pointer" |> Html.text ] |> Html.h3 []
+            , Frontend.View.Common.textLines pointerTexts
+            , verticalSpacerFromHeightInEm 0.5
+            ]
 
 
 {-| A modal dialog blocks the game client until it is answered, so it comes before everything

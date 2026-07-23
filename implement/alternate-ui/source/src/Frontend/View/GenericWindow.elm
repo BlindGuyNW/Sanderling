@@ -337,7 +337,17 @@ walk typeHierarchy node =
                 { items = [ Control entry ], hasCandidate = True }
 
             Nothing ->
-                walkContainer typeHierarchy node
+                --  Before the container logic, which would get a filled field wrong: the clear-X
+                --  ButtonIcon the client grows inside a field that holds text is a candidate,
+                --  and seen by the container walk it demotes the field to a card -- a button
+                --  labeled with whatever was last typed. Observed on the market window's search
+                --  field, 2026-07-23.
+                case textFieldItems typeHierarchy node of
+                    Just entries ->
+                        { items = entries |> List.map Control, hasCandidate = True }
+
+                    Nothing ->
+                        walkContainer typeHierarchy node
 
 
 walkContainer : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> WalkResult
@@ -861,6 +871,80 @@ sliderEntry typeHierarchy node =
                                         track
                                     )
                         )
+            )
+
+
+{-| The entries for a text field -- a node of the client's `BaseSingleLineEdit` family -- or
+`Nothing` for anything else. The field renders as an edit box: type into it and press Enter, and
+the typed text replaces the field's content in the game client. Verified against the market
+window's search field on a live client, 2026-07-23.
+
+The client builds these fields with a `textLabel` child holding the current content and a
+`hintTextLabel` holding the placeholder, drawn only while the field is empty. That makes the
+usual label preference wrong in the filled state: the text such a node "contains" is whatever
+the player last typed, which names nothing. So the label is the placeholder while the client
+shows one, and falls back past contained text straight to the client's tooltip or internal name.
+
+A field that holds text also grows controls of its own -- a clear-X `ButtonIcon`, carrying the
+client's `Clear` tooltip -- which is why the whole subtree is claimed here rather than left to
+the container walk: seen there, the inner candidate demotes the field to a card, a button
+labeled with whatever was last typed. The inner controls follow the field as entries of their
+own, so the X stays a button the player can press.
+
+-}
+textFieldItems : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> Maybe (List Common.Entry)
+textFieldItems typeHierarchy node =
+    let
+        typeName =
+            node.uiNode.pythonObjectTypeName
+
+        inheritanceChain =
+            Dict.get typeName typeHierarchy |> Maybe.withDefault [ typeName ]
+    in
+    if not (List.member "BaseSingleLineEdit" inheritanceChain) then
+        Nothing
+
+    else
+        let
+            textOfDescendantNamed name =
+                node
+                    |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+                    |> List.filter
+                        (.uiNode
+                            >> EveOnline.ParseUserInterface.getNameFromDictEntries
+                            >> (==) (Just name)
+                        )
+                    |> List.filterMap (.uiNode >> EveOnline.ParseUserInterface.getDisplayText)
+                    |> List.head
+                    |> Maybe.map Common.plainText
+                    |> Maybe.andThen EveOnline.ParseUserInterface.discardUnreadableText
+
+            label =
+                [ textOfDescendantNamed "hintTextLabel"
+                , node.uiNode
+                    |> EveOnline.ParseUserInterface.getHintTextFromDictEntries
+                    |> Maybe.map Common.plainText
+                    |> Maybe.andThen EveOnline.ParseUserInterface.discardUnreadableText
+                , node.uiNode |> EveOnline.ParseUserInterface.getNameFromDictEntries
+                ]
+                    |> List.filterMap identity
+                    |> List.head
+                    |> Maybe.withDefault "(text field)"
+
+            innerControls =
+                node
+                    |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+                    |> List.filter (isControlCandidate typeHierarchy)
+                    |> List.filter Common.isVisible
+                    |> Common.nodesInReadingOrder
+                    |> List.map
+                        (\inner ->
+                            Common.control (Common.labelForControl handWrittenNames inner) inner
+                        )
+        in
+        Just
+            (Common.textFieldControl label (textOfDescendantNamed "textLabel") node
+                :: innerControls
             )
 
 

@@ -56,6 +56,74 @@ effectsForDragAndDrop { startLocation, mouseButton, endLocation } =
     ]
 
 
+{-| The key that types the given character, or `Nothing` when no single unmodified key does.
+
+The game client derives the character from the key-down message and the active keyboard layout,
+so this mapping asserts a US layout for the punctuation keys (`VK_OEM_*`), and it never reaches
+for Shift: posting a modifier key-down does not register as a held modifier (measured against a
+live client 2026-07-23 -- a posted Ctrl+A typed a literal "a"), so uppercase and shifted symbols
+are not reachable this way at all. Letters therefore arrive lowercase, which the client's search
+fields do not care about.
+
+-}
+virtualKeyCodeForCharacter : Char -> Maybe VirtualKeyCode
+virtualKeyCodeForCharacter character =
+    let
+        lowercase =
+            Char.toLower character
+
+        code =
+            Char.toCode lowercase
+    in
+    if Char.isAlpha lowercase && code <= Char.toCode 'z' then
+        --  'a'..'z' map to VK_A..VK_Z; the guard keeps non-ASCII letters out.
+        Just (VirtualKeyCodeFromInt (0x41 + code - Char.toCode 'a'))
+
+    else if Char.isDigit lowercase then
+        Just (VirtualKeyCodeFromInt (0x30 + code - Char.toCode '0'))
+
+    else
+        case lowercase of
+            ' ' ->
+                Just vkey_SPACE
+
+            '-' ->
+                Just (VirtualKeyCodeFromInt 0xBD)
+
+            '.' ->
+                Just (VirtualKeyCodeFromInt 0xBE)
+
+            ',' ->
+                Just (VirtualKeyCodeFromInt 0xBC)
+
+            '\'' ->
+                Just (VirtualKeyCodeFromInt 0xDE)
+
+            ';' ->
+                Just (VirtualKeyCodeFromInt 0xBA)
+
+            '/' ->
+                Just (VirtualKeyCodeFromInt 0xBF)
+
+            '`' ->
+                Just (VirtualKeyCodeFromInt 0xC0)
+
+            '[' ->
+                Just (VirtualKeyCodeFromInt 0xDB)
+
+            '\\' ->
+                Just (VirtualKeyCodeFromInt 0xDC)
+
+            ']' ->
+                Just (VirtualKeyCodeFromInt 0xDD)
+
+            '=' ->
+                Just (VirtualKeyCodeFromInt 0xBB)
+
+            _ ->
+                Nothing
+
+
 virtualKeyCodeFromMouseButton : MouseButton -> VirtualKeyCode
 virtualKeyCodeFromMouseButton mouseButton =
     case mouseButton of

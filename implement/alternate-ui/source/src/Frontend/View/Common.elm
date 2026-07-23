@@ -18,6 +18,7 @@ module Frontend.View.Common exposing
     , prose
     , section
     , sliderControl
+    , textFieldControl
     , textLines
     , toggleControl
     )
@@ -99,12 +100,18 @@ announces `toggle button, pressed` -- or, without an input route, as a word afte
 `sliderPercent` makes the entry a slider: it renders as a `role="slider"` element the arrow keys
 adjust, instead of a button.
 
+`fieldText` makes the entry a text field: it renders as an edit box, and pressing Enter in it
+sends what was typed into the corresponding field of the game client. The value carried is what
+the game client's field holds right now, or `Nothing` when it is empty -- announced with the
+label, since the edit box on the page starts empty rather than mirroring the client.
+
 -}
 type alias Entry =
     { label : String
     , target : Maybe ControlTarget
     , checkState : Maybe Bool
     , sliderPercent : Maybe Int
+    , fieldText : Maybe (Maybe String)
     }
 
 
@@ -122,28 +129,35 @@ type alias ControlTarget =
 -}
 control : String -> UITreeNodeWithDisplayRegion -> Entry
 control label node =
-    { label = label, target = Just { node = node, canMenu = True, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing }
+    { label = label, target = Just { node = node, canMenu = True, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Nothing }
 
 
 {-| A control the player can only activate, with no context menu behind it.
 -}
 controlActivateOnly : String -> UITreeNodeWithDisplayRegion -> Entry
 controlActivateOnly label node =
-    { label = label, target = Just { node = node, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing }
+    { label = label, target = Just { node = node, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Nothing }
 
 
 {-| A control the client draws as checked or unchecked, such as a settings checkbox.
 -}
 toggleControl : String -> Bool -> UITreeNodeWithDisplayRegion -> Entry
 toggleControl label checked node =
-    { label = label, target = Just { node = node, canMenu = True, activate = MouseClickLeft }, checkState = Just checked, sliderPercent = Nothing }
+    { label = label, target = Just { node = node, canMenu = True, activate = MouseClickLeft }, checkState = Just checked, sliderPercent = Nothing, fieldText = Nothing }
 
 
 {-| A slider, with its current value as a percentage and the track node clicks are aimed at.
 -}
 sliderControl : String -> Int -> UITreeNodeWithDisplayRegion -> Entry
 sliderControl label percent trackNode =
-    { label = label, target = Just { node = trackNode, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Just percent }
+    { label = label, target = Just { node = trackNode, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Just percent, fieldText = Nothing }
+
+
+{-| A text field of the game client, with what it currently holds, or `Nothing` when empty.
+-}
+textFieldControl : String -> Maybe String -> UITreeNodeWithDisplayRegion -> Entry
+textFieldControl label currentText node =
+    { label = label, target = Just { node = node, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Just currentText }
 
 
 {-| An entry that scrolls a list of the game client by the given number of pages, positive down.
@@ -157,6 +171,7 @@ pageControl label pages scrollNode =
     , target = Just { node = scrollNode, canMenu = False, activate = VerticalScrollPage pages }
     , checkState = Nothing
     , sliderPercent = Nothing
+    , fieldText = Nothing
     }
 
 
@@ -164,7 +179,7 @@ pageControl label pages scrollNode =
 -}
 prose : String -> Entry
 prose label =
-    { label = label, target = Nothing, checkState = Nothing, sliderPercent = Nothing }
+    { label = label, target = Nothing, checkState = Nothing, sliderPercent = Nothing, fieldText = Nothing }
 
 
 {-| A list of things in the game client, each with the actions we can perform on it.
@@ -303,11 +318,14 @@ entryHtml context entry =
                 Html.text entry.label
 
             Just target ->
-                case entry.sliderPercent of
-                    Just percent ->
+                case ( entry.sliderPercent, entry.fieldText ) of
+                    ( Just percent, _ ) ->
                         sliderElement context.inputRoute entry.label percent target.node
 
-                    Nothing ->
+                    ( Nothing, Just currentText ) ->
+                        textFieldElement context.inputRoute entry.label currentText target.node
+
+                    ( Nothing, Nothing ) ->
                         controlElementForInput context.inputRoute entry.label target.node target.canMenu entry.checkState target.activate
         ]
 
@@ -378,6 +396,62 @@ sliderElement maybeInputRoute label percent node =
                 , HE.preventDefaultOn "keydown" keyDecoder
                 ]
                 [ Html.text labelWithValue ]
+
+
+{-| A text field of the game client, as the edit box a screen reader expects: what the game's
+field holds is in the box, readable with the arrow keys like any edit content, and typing a new
+text and pressing Enter sends it to replace the field's content in the game client.
+
+The content rides in as the `value` *attribute*, deliberately not the property: the attribute is
+only the box's default, so it fills the box on first render and follows later readings -- until
+the player types, which marks the box dirty and ends the attribute's influence. That is exactly
+the handover wanted here. Mirroring through the value property instead would re-set the box on
+every reading, wiping whatever the player is in the middle of typing.
+
+Without an input route it is the label and content as plain text, so a saved reading still tells
+what every field held.
+
+-}
+textFieldElement : Maybe (InputRoute event) -> String -> Maybe String -> UITreeNodeWithDisplayRegion -> Html.Html event
+textFieldElement maybeInputRoute label currentText node =
+    case maybeInputRoute of
+        Nothing ->
+            Html.text
+                (label
+                    ++ (case currentText of
+                            Nothing ->
+                                ""
+
+                            Just content ->
+                                ", currently: " ++ content
+                       )
+                    ++ " (text field)"
+                )
+
+        Just inputRoute ->
+            let
+                enterKeyDecoder =
+                    Json.Decode.field "key" Json.Decode.string
+                        |> Json.Decode.andThen
+                            (\key ->
+                                if key == "Enter" then
+                                    Json.Decode.at [ "target", "value" ] Json.Decode.string
+
+                                else
+                                    Json.Decode.fail "not the Enter key"
+                            )
+                        |> Json.Decode.map
+                            (\typedText ->
+                                ( inputRoute node (TypeTextIntoField typedText), True )
+                            )
+            in
+            Html.input
+                [ HA.type_ "text"
+                , HA.attribute "aria-label" label
+                , HA.attribute "value" (currentText |> Maybe.withDefault "")
+                , HE.preventDefaultOn "keydown" enterKeyDecoder
+                ]
+                []
 
 
 {-| The label to present for a control, preferring what the game client itself says over anything
