@@ -1745,11 +1745,93 @@ displayReadInventoryWindow maybeInputRouteConfig inventoryWindow =
                     |> List.map itemRowHtml
                     |> Html.ul [ HA.style "list-style" "none", HA.style "padding-inline-start" "0" ]
                 ]
+
+        context =
+            viewContextFromInputRouteConfig maybeInputRouteConfig 3
+
+        {- The container tree on the window's left: the ship, the hangars, whatever else the
+           location offers. This is how the player moves between containers -- delivered goods
+           land in the item hangar while the window still shows the ship's cargo -- and the view
+           used to throw the tree away, leaving the items visible but the way to any other
+           container gone. A click selects the container; a right-click offers its menu.
+
+           The client marks the selected entry by drawing a `SelectionIndicatorLine` inside the
+           entry's own header row, which is color and geometry, so here it becomes a word. The
+           check runs against `selectRegion` -- the entry's header row -- rather than the whole
+           entry, because a child entry's marker is also a descendant of its parent. Observed
+           2026-07-23, docked, with the active ship selected.
+        -}
+        treeEntryIsSelected entry =
+            (entry.selectRegion |> Maybe.withDefault entry.uiNode)
+                |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+                |> List.any
+                    (\descendant ->
+                        (descendant.uiNode.pythonObjectTypeName == "SelectionIndicatorLine")
+                            && Frontend.View.Common.isVisible descendant
+                    )
+
+        flattenTreeEntries entries =
+            entries
+                |> List.concatMap
+                    (\entry ->
+                        entry
+                            :: flattenTreeEntries
+                                (entry.children
+                                    |> List.map
+                                        (\(EveOnline.ParseUserInterface.InventoryWindowLeftTreeEntryChild child) ->
+                                            child
+                                        )
+                                )
+                    )
+
+        containerEntries =
+            inventoryWindow.leftTreeEntries
+                |> flattenTreeEntries
+                |> List.filter (.uiNode >> Frontend.View.Common.isVisible)
+                |> List.map
+                    (\entry ->
+                        Frontend.View.Common.control
+                            (Frontend.View.Common.plainText entry.text
+                                ++ (if treeEntryIsSelected entry then
+                                        " (selected)"
+
+                                    else
+                                        ""
+                                   )
+                            )
+                            (entry.selectRegion |> Maybe.withDefault entry.uiNode)
+                    )
+
+        containersHtml =
+            if containerEntries == [] then
+                []
+
+            else
+                [ Frontend.View.Common.actionList context containerEntries ]
+
+        windowButtonEntries =
+            [ inventoryWindow.buttonToStackAll, inventoryWindow.buttonToSwitchToListView ]
+                |> List.filterMap identity
+                |> List.filter Frontend.View.Common.isVisible
+                |> List.map
+                    (\button ->
+                        Frontend.View.Common.controlActivateOnly
+                            (Frontend.View.Common.labelForControl Frontend.View.Common.noNameTable button)
+                            button
+                    )
+
+        windowButtonsHtml =
+            if windowButtonEntries == [] then
+                []
+
+            else
+                [ Frontend.View.Common.actionList context windowButtonEntries ]
     in
-    ([ [ "Inventory" |> Html.text ] |> Html.h3 []
-     , [ capacityText |> Html.text ] |> Html.p []
-     ]
+    ([ [ "Inventory" |> Html.text ] |> Html.h3 [] ]
+        ++ containersHtml
+        ++ [ [ capacityText |> Html.text ] |> Html.p [] ]
         ++ itemsHtml
+        ++ windowButtonsHtml
     )
         |> Html.div []
 
