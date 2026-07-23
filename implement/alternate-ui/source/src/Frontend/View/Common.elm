@@ -15,6 +15,7 @@ module Frontend.View.Common exposing
     , plainText
     , prose
     , section
+    , sliderControl
     , textLines
     , toggleControl
     )
@@ -92,11 +93,15 @@ close button, have nothing behind a right-click.
 the context-menu entries carry theirs: as `aria-pressed` on the button, so a screen reader
 announces `toggle button, pressed` -- or, without an input route, as a word after the label.
 
+`sliderPercent` makes the entry a slider: it renders as a `role="slider"` element the arrow keys
+adjust, instead of a button.
+
 -}
 type alias Entry =
     { label : String
     , target : Maybe ControlTarget
     , checkState : Maybe Bool
+    , sliderPercent : Maybe Int
     }
 
 
@@ -110,28 +115,35 @@ type alias ControlTarget =
 -}
 control : String -> UITreeNodeWithDisplayRegion -> Entry
 control label node =
-    { label = label, target = Just { node = node, canMenu = True }, checkState = Nothing }
+    { label = label, target = Just { node = node, canMenu = True }, checkState = Nothing, sliderPercent = Nothing }
 
 
 {-| A control the player can only activate, with no context menu behind it.
 -}
 controlActivateOnly : String -> UITreeNodeWithDisplayRegion -> Entry
 controlActivateOnly label node =
-    { label = label, target = Just { node = node, canMenu = False }, checkState = Nothing }
+    { label = label, target = Just { node = node, canMenu = False }, checkState = Nothing, sliderPercent = Nothing }
 
 
 {-| A control the client draws as checked or unchecked, such as a settings checkbox.
 -}
 toggleControl : String -> Bool -> UITreeNodeWithDisplayRegion -> Entry
 toggleControl label checked node =
-    { label = label, target = Just { node = node, canMenu = True }, checkState = Just checked }
+    { label = label, target = Just { node = node, canMenu = True }, checkState = Just checked, sliderPercent = Nothing }
+
+
+{-| A slider, with its current value as a percentage and the track node clicks are aimed at.
+-}
+sliderControl : String -> Int -> UITreeNodeWithDisplayRegion -> Entry
+sliderControl label percent trackNode =
+    { label = label, target = Just { node = trackNode, canMenu = False }, checkState = Nothing, sliderPercent = Just percent }
 
 
 {-| Text that is only there to be read, with nothing to act on.
 -}
 prose : String -> Entry
 prose label =
-    { label = label, target = Nothing, checkState = Nothing }
+    { label = label, target = Nothing, checkState = Nothing, sliderPercent = Nothing }
 
 
 {-| A list of things in the game client, each with the actions we can perform on it.
@@ -258,8 +270,81 @@ entryHtml context entry =
                 Html.text entry.label
 
             Just target ->
-                controlElementWithState context.inputRoute entry.label target.node target.canMenu entry.checkState
+                case entry.sliderPercent of
+                    Just percent ->
+                        sliderElement context.inputRoute entry.label percent target.node
+
+                    Nothing ->
+                        controlElementWithState context.inputRoute entry.label target.node target.canMenu entry.checkState
         ]
+
+
+{-| A slider of the game client, as the `role="slider"` element a screen reader expects: it
+announces its value, and the arrow keys adjust it -- Home and End jump to the ends. Each key
+sends a click at the corresponding position on the track, because that is how the client's own
+sliders are set: the handle jumps to where the track is clicked.
+
+Without an input route it is the label and value as plain text, so a saved reading still tells
+where every slider stood.
+
+-}
+sliderElement : Maybe (InputRoute event) -> String -> Int -> UITreeNodeWithDisplayRegion -> Html.Html event
+sliderElement maybeInputRoute label percent node =
+    let
+        labelWithValue =
+            label ++ ": " ++ String.fromInt percent ++ " %"
+    in
+    case maybeInputRoute of
+        Nothing ->
+            Html.text labelWithValue
+
+        Just inputRoute ->
+            let
+                eventForPercent targetPercent =
+                    inputRoute node
+                        (Frontend.InspectParsedUserInterface.MouseClickAtHorizontalFraction
+                            (toFloat (clamp 0 100 targetPercent) / 100)
+                        )
+
+                keyDecoder =
+                    Json.Decode.field "key" Json.Decode.string
+                        |> Json.Decode.andThen
+                            (\key ->
+                                case key of
+                                    "ArrowUp" ->
+                                        Json.Decode.succeed (percent + 5)
+
+                                    "ArrowRight" ->
+                                        Json.Decode.succeed (percent + 5)
+
+                                    "ArrowDown" ->
+                                        Json.Decode.succeed (percent - 5)
+
+                                    "ArrowLeft" ->
+                                        Json.Decode.succeed (percent - 5)
+
+                                    "Home" ->
+                                        Json.Decode.succeed 0
+
+                                    "End" ->
+                                        Json.Decode.succeed 100
+
+                                    _ ->
+                                        Json.Decode.fail "not a slider key"
+                            )
+                        |> Json.Decode.map (\targetPercent -> ( eventForPercent targetPercent, True ))
+            in
+            Html.div
+                [ HA.attribute "role" "slider"
+                , HA.tabindex 0
+                , HA.attribute "aria-label" label
+                , HA.attribute "aria-valuemin" "0"
+                , HA.attribute "aria-valuemax" "100"
+                , HA.attribute "aria-valuenow" (String.fromInt percent)
+                , HA.attribute "aria-valuetext" (String.fromInt percent ++ " %")
+                , HE.preventDefaultOn "keydown" keyDecoder
+                ]
+                [ Html.text labelWithValue ]
 
 
 {-| The label to present for a control, preferring what the game client itself says over anything

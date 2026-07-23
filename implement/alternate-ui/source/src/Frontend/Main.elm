@@ -339,41 +339,78 @@ update event stateBefore =
                                 |> Maybe.andThen (.memoryReading >> .parseResult >> Result.toMaybe)
                                 |> Maybe.andThen (scrollToRevealNode sendInput.uiNode)
 
-                        clickLocation =
+                        targetRegion =
                             case maybeScrollToReveal of
                                 Just scrollToReveal ->
-                                    scrollToReveal.clickLocation
+                                    scrollToReveal.predictedRegion
 
                                 Nothing ->
-                                    sendInput.uiNode.totalDisplayRegionVisible
-                                        |> EveOnline.ParseUserInterface.centerFromDisplayRegion
+                                    case sendInput.input of
+                                        --  A fraction is measured along the whole control, not
+                                        --  along whatever slice of it happens to be unoccluded.
+                                        MouseClickAtHorizontalFraction _ ->
+                                            sendInput.uiNode.totalDisplayRegion
 
-                        clickEffects =
+                                        _ ->
+                                            sendInput.uiNode.totalDisplayRegionVisible
+
+                        clickLocation =
                             case sendInput.input of
-                                MouseClickLeft ->
-                                    Common.EffectOnWindow.effectsMouseClickAtLocation
-                                        Common.EffectOnWindow.MouseButtonLeft
-                                        clickLocation
+                                MouseClickAtHorizontalFraction fraction ->
+                                    { x =
+                                        targetRegion.x
+                                            + round (fraction * toFloat (max 0 (targetRegion.width - 1)))
+                                    , y = targetRegion.y + targetRegion.height // 2
+                                    }
 
+                                _ ->
+                                    targetRegion |> EveOnline.ParseUserInterface.centerFromDisplayRegion
+
+                        sequenceElements spacingMilliseconds effects =
+                            effects
+                                |> List.map (effectOnWindowAsVolatileHostEffectOnWindow >> EveOnline.VolatileProcessInterface.Effect)
+                                |> List.intersperse (EveOnline.VolatileProcessInterface.DelayMilliseconds spacingMilliseconds)
+
+                        clickTask =
+                            case sendInput.input of
                                 MouseClickRight ->
                                     Common.EffectOnWindow.effectsMouseClickAtLocation
                                         Common.EffectOnWindow.MouseButtonRight
                                         clickLocation
+                                        |> sequenceElements effectSequenceSpacingMilliseconds
 
-                        sequenceElements effects =
-                            effects
-                                |> List.map (effectOnWindowAsVolatileHostEffectOnWindow >> EveOnline.VolatileProcessInterface.Effect)
-                                |> List.intersperse (EveOnline.VolatileProcessInterface.DelayMilliseconds effectSequenceSpacingMilliseconds)
+                                MouseClickLeft ->
+                                    Common.EffectOnWindow.effectsMouseClickAtLocation
+                                        Common.EffectOnWindow.MouseButtonLeft
+                                        clickLocation
+                                        |> sequenceElements effectSequenceSpacingMilliseconds
+
+                                {- Setting a slider is a press-move-release rather than a click.
+                                   The press already jumps the handle to the pressed position, but
+                                   two plain clicks near the same spot in quick succession fall to
+                                   the client's double-click detection and set nothing -- observed
+                                   on the settings window's master volume slider, 2026-07-23. The
+                                   one-pixel drag between press and release keeps repeated
+                                   adjustments from ever forming a double-click, and the slower
+                                   spacing lets the client see the move while the button is down.
+                                -}
+                                MouseClickAtHorizontalFraction _ ->
+                                    Common.EffectOnWindow.effectsForDragAndDrop
+                                        { startLocation = clickLocation
+                                        , mouseButton = Common.EffectOnWindow.MouseButtonLeft
+                                        , endLocation = { x = clickLocation.x + 1, y = clickLocation.y }
+                                        }
+                                        |> sequenceElements 100
 
                         task =
                             case maybeScrollToReveal of
                                 Nothing ->
-                                    sequenceElements clickEffects
+                                    clickTask
 
                                 Just scrollToReveal ->
-                                    sequenceElements scrollToReveal.effects
+                                    sequenceElements effectSequenceSpacingMilliseconds scrollToReveal.effects
                                         ++ [ EveOnline.VolatileProcessInterface.DelayMilliseconds scrollSettleDelayMilliseconds ]
-                                        ++ sequenceElements clickEffects
+                                        ++ clickTask
 
                         requestSendInputToGameClient =
                             apiRequestCmd
@@ -450,7 +487,7 @@ scrollContainerClassNames =
 
 type alias ScrollToRevealStructure =
     { effects : List Common.EffectOnWindow.EffectOnWindowStructure
-    , clickLocation : Common.EffectOnWindow.Location2d
+    , predictedRegion : EveOnline.ParseUserInterface.DisplayRegion
     }
 
 
@@ -538,6 +575,12 @@ scrollToRevealNode nodeAsCarried parseSuccess =
 
                     wheelLocation =
                         viewport |> EveOnline.ParseUserInterface.centerFromDisplayRegion
+
+                    nodeRegion =
+                        node.totalDisplayRegion
+
+                    predictedRegion =
+                        { nodeRegion | y = nodeRegion.y + deltaTicks * pixelsPerWheelTick }
                 in
                 if deltaTicks == 0 then
                     Nothing
@@ -554,10 +597,7 @@ scrollToRevealNode nodeAsCarried parseSuccess =
                                                     { location = wheelLocation, deltaTicks = ticks }
                                             )
                                    )
-                        , clickLocation =
-                            { x = nodeCenter.x
-                            , y = nodeCenter.y + deltaTicks * pixelsPerWheelTick
-                            }
+                        , predictedRegion = predictedRegion
                         }
             )
 

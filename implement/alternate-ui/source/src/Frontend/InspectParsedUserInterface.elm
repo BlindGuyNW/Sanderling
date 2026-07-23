@@ -35,6 +35,10 @@ type TreeViewNodeChildren event expandableId
 type InputOnUINode
     = MouseClickLeft
     | MouseClickRight
+      {- A left-click at the given fraction of the node's width, vertically centered. This is how
+         a slider is set: the game client jumps the handle to the clicked position on the track.
+      -}
+    | MouseClickAtHorizontalFraction Float
 
 
 type ParsedUITreeViewPathNode
@@ -92,6 +96,9 @@ displayTextForInputKind inputKind =
 
         MouseClickRight ->
             "rightclick"
+
+        MouseClickAtHorizontalFraction _ ->
+            "setposition"
 
 
 renderTreeNodeFromParsedUserInterface :

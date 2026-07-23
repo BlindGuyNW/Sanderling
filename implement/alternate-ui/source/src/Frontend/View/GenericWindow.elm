@@ -332,7 +332,17 @@ walk typeHierarchy node =
         }
 
     else
-        let
+        case sliderEntry typeHierarchy node of
+            Just entry ->
+                { items = [ Control entry ], hasCandidate = True }
+
+            Nothing ->
+                walkContainer typeHierarchy node
+
+
+walkContainer : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> WalkResult
+walkContainer typeHierarchy node =
+    let
             childResults =
                 node
                     |> EveOnline.ParseUserInterface.listChildrenWithDisplayRegion
@@ -699,6 +709,86 @@ substring test on "Button" wrongly claims it, which demotes the real button that
 controlTypeNames : List String
 controlTypeNames =
     [ "GroupAllButton", "SidePanelButton", "ExpandButton", "SafetyButton", "ModuleButton" ]
+
+
+{-| The node read as a slider, when it is one: a node that is, or directly holds, a track of the
+client's `Slider` family. The wrappers are not `Slider` subclasses -- `SystemMenuSlider` in the
+settings window derives from `ContainerAutoSize` and holds the label and the `Slider` track side
+by side -- so the unit to present is the wrapper, whose subtree text is the slider's label.
+
+The client stores no readable value on the node; the value lives only in geometry, the `handle`'s
+position along the track. Observed in the settings window's Audio panel on 2026-07-23, where the
+computed percentages matched the client's own display across thirteen sliders.
+
+The entry targets the track node, and setting a value is a click at that fraction of the track's
+width: the client jumps the handle to the clicked position (verified live on `masterVolume`).
+
+-}
+sliderEntry : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> Maybe Common.Entry
+sliderEntry typeHierarchy node =
+    let
+        isSliderTrack candidate =
+            let
+                typeName =
+                    candidate.uiNode.pythonObjectTypeName
+
+                inheritanceChain =
+                    Dict.get typeName typeHierarchy |> Maybe.withDefault [ typeName ]
+            in
+            List.member "Slider" inheritanceChain
+
+        maybeTrack =
+            if isSliderTrack node then
+                Just node
+
+            else
+                node
+                    |> EveOnline.ParseUserInterface.listChildrenWithDisplayRegion
+                    |> List.filter isSliderTrack
+                    |> List.head
+    in
+    maybeTrack
+        |> Maybe.andThen
+            (\track ->
+                track
+                    |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+                    |> List.filter
+                        (.uiNode
+                            >> EveOnline.ParseUserInterface.getNameFromDictEntries
+                            >> (==) (Just "handle")
+                        )
+                    |> List.head
+                    |> Maybe.andThen
+                        (\handle ->
+                            let
+                                trackRegion =
+                                    track.totalDisplayRegion
+
+                                handleTravel =
+                                    trackRegion.width - handle.totalDisplayRegion.width
+                            in
+                            if handleTravel <= 0 then
+                                Nothing
+
+                            else
+                                Just
+                                    (Common.sliderControl
+                                        (textOfSubtree node
+                                            |> Maybe.withDefault (Common.labelForControl handWrittenNames node)
+                                        )
+                                        (clamp 0
+                                            100
+                                            (round
+                                                (100
+                                                    * toFloat (handle.totalDisplayRegion.x - trackRegion.x)
+                                                    / toFloat handleTravel
+                                                )
+                                            )
+                                        )
+                                        track
+                                    )
+                        )
+            )
 
 
 {-| The on/off state the client draws on a `Checkbox`, or `Nothing` for anything that is not one.
