@@ -285,11 +285,11 @@ contentItems typeHierarchy window =
 {-| What a walk of one node found, and whether any of its subtree was a control candidate.
 
 `hasCandidate` is what makes over-generous candidate detection safe. A candidate that contains
-another candidate is not a control but the container of one -- a `ButtonGroup` holding two
-`Button`s, a `CardsContainer` holding cards -- so it is descended into rather than read as a
+another candidate is usually not a control but the container of one -- a `ButtonGroup` holding
+two `Button`s, a `CardsContainer` holding cards -- so it is descended into rather than read as a
 single control. Deciding that from the children's results is exactly what `hasCandidate` carries
-up. Measured against the Agency and fitting windows, no genuine control ever contains another
-candidate, so this demotion never swallows a real control.
+up. Usually, not always: the station's agent cards are genuine controls that hold their own chat
+button, so a demoted candidate with text of its own is brought back as a card by `cardItems`.
 
 It also drives the text collapse below: a node is only offered as one all-text control when
 nothing beneath it was a candidate, so a section of prose is not mistaken for a button.
@@ -345,9 +345,18 @@ walk typeHierarchy node =
             , hasCandidate = True
             }
 
-        else if nodeIsCandidate || descendantHasCandidate then
-            --  Either a candidate that holds candidates (a container of controls, descended into)
-            --  or a plain container with controls somewhere below: keep what the children found.
+        else if nodeIsCandidate then
+            --  A candidate holding candidates is one of two things, told apart by whether any
+            --  text is left once its inner controls have claimed theirs. See `cardItems`.
+            case cardItems node childItems of
+                Just items ->
+                    { items = items, hasCandidate = True }
+
+                Nothing ->
+                    { items = mergeProseRuns childItems, hasCandidate = True }
+
+        else if descendantHasCandidate then
+            --  A plain container with controls somewhere below: keep what the children found.
             { items = mergeProseRuns childItems, hasCandidate = True }
 
         else
@@ -364,6 +373,62 @@ walk typeHierarchy node =
 
                         _ ->
                             { items = mergeProseRuns childItems, hasCandidate = False }
+
+
+{-| A candidate that holds other candidates, re-read as a card when text remains its own.
+
+The demotion in `walk` assumed no genuine control ever contains another candidate, which held
+for the Agency and fitting windows -- and then the station's Agents panel disproved it: an
+`AgentEntry` is a card the player right-clicks for its menu, and it holds a chat `ButtonIcon`.
+Demoting it turned the agent rows into unclickable prose. Observed 2026-07-23.
+
+What separates a card from a mere container of controls is whether any text is left over once
+the inner controls have claimed theirs. A `ButtonGroup` holding two `Button`s has none -- every
+word in it belongs to one of the buttons -- so it stays a container, and no phantom control
+appears. The agent card keeps its name, career and mission status, and that leftover text names
+the thing the row acts on, so the row comes back as a control followed by its inner controls.
+
+Past the merge limit the leftover text is a page of prose rather than a card's label, and the
+node stays a container, the same cutoff `collapsedControlForNode` applies.
+
+-}
+cardItems : UITreeNodeWithDisplayRegion -> List ContentItem -> Maybe (List ContentItem)
+cardItems node childItems =
+    let
+        unclaimedTexts =
+            childItems
+                |> List.filterMap
+                    (\item ->
+                        case item of
+                            Prose prose ->
+                                Just prose
+
+                            _ ->
+                                Nothing
+                    )
+                |> List.sortBy .position
+                |> List.map .text
+
+        innerControlsAndGroups =
+            childItems
+                |> List.filter
+                    (\item ->
+                        case item of
+                            Prose _ ->
+                                False
+
+                            _ ->
+                                True
+                    )
+
+        label =
+            String.join ", " unclaimedTexts
+    in
+    if String.isEmpty label || maximumMergedProseLength < String.length label then
+        Nothing
+
+    else
+        Just (Control (Common.control label node) :: innerControlsAndGroups)
 
 
 {-| A container holding nothing but text is itself one thing the player can act on.
