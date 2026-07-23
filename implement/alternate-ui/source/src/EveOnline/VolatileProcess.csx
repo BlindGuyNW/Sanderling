@@ -5,8 +5,14 @@
 #r "sha256:B9B4E633EA6C728BAD5F7CBBEF7F8B842F7E10181731DBE5EC3CD995A6F60287"
 #r "sha256:81110D44256397F0F3C572A20CA94BB4C669E5DE89F9348ABAD263FBD81C54B9"
 
-// https://github.com/Arcitectus/Sanderling/releases/download/v2025-10-24/read-memory-64-bit-separate-assemblies-594a2339a63d7e946872a77c0d5772acdf75bd98-win-x64.zip
-#r "sha256:b1cb3048db6b5be1016c3ef97f7054a99643a2e8376654b4964aada0669bc472"
+// Locally-built read-memory-64-bit, because this fork's ReadPythonTypeHierarchy is not in any
+// published release yet. The assembly is committed at implement/read-memory-64-bit/prebuilt/ and
+// start-alternate-ui.ps1 copies it into pine's blob library before each deploy, so this hash
+// resolves without a release. When a release carrying ReadPythonTypeHierarchy is cut, replace this
+// with the release URL + hash and delete the prebuilt copy (see CLAUDE.md version pinning).
+// Superseded release pin: https://github.com/Arcitectus/Sanderling/releases/download/v2025-10-24/read-memory-64-bit-separate-assemblies-594a2339a63d7e946872a77c0d5772acdf75bd98-win-x64.zip
+// Superseded release hash: sha256:b1cb3048db6b5be1016c3ef97f7054a99643a2e8376654b4964aada0669bc472
+#r "sha256:449c738b887302eb5b9c28d25aa8f4e17be9e6eeff60320a65a94a0c5d5b796b"
 
 #r "mscorlib"
 #r "netstandard"
@@ -210,6 +216,8 @@ class Response
             public string readingId;
 
             public string memoryReadingSerialRepresentationJson;
+
+            public string pythonTypeHierarchySerialRepresentationJson;
         }
     }
 }
@@ -298,6 +306,12 @@ Response request(Request request)
 
         string memoryReadingSerialRepresentationJson = null;
 
+        //  The client's class inheritance, one entry per type name in the tree, most-derived
+        //  first. This is the signal the frontend uses to tell a control from the container
+        //  that holds it - a fact the type name alone does not carry. Read here, while the
+        //  memory reader is alive, because it resolves type objects out of the same process.
+        string pythonTypeHierarchySerialRepresentationJson = null;
+
         using (var memoryReader = new read_memory_64_bit.MemoryReaderFromLiveProcess(processId))
         {
             var uiTree = read_memory_64_bit.EveOnline64.ReadUITreeFromAddress(readFromWindow.uiRootAddress, memoryReader, 99);
@@ -307,6 +321,10 @@ Response request(Request request)
                 memoryReadingSerialRepresentationJson =
                 read_memory_64_bit.EveOnline64.SerializeMemoryReadingNodeToJson(
                     uiTree.WithOtherDictEntriesRemoved());
+
+                pythonTypeHierarchySerialRepresentationJson =
+                Newtonsoft.Json.JsonConvert.SerializeObject(
+                    read_memory_64_bit.EveOnline64.ReadPythonTypeHierarchy(uiTree, memoryReader));
             }
         }
 
@@ -349,6 +367,7 @@ Response request(Request request)
                     processId = processId,
                     windowClientRectOffset = windowClientRectOffset,
                     memoryReadingSerialRepresentationJson = memoryReadingSerialRepresentationJson,
+                    pythonTypeHierarchySerialRepresentationJson = pythonTypeHierarchySerialRepresentationJson,
                     readingId = readingId
                 },
             },

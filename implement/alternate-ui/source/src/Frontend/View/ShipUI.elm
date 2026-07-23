@@ -172,12 +172,9 @@ modulesSection context shipUI =
 
 moduleEntry : ShipUIModuleButton -> Common.Entry
 moduleEntry moduleButton =
-    { label = describeSlot moduleButton.slotUINode ++ moduleStateSuffix moduleButton
-    , actions =
-        [ Common.activate moduleButton.uiNode
-        , Common.menu moduleButton.uiNode
-        ]
-    }
+    Common.control
+        (describeSlot moduleButton.slotUINode ++ moduleStateSuffix moduleButton)
+        moduleButton.uiNode
 
 
 {-| What the client says about the module's state, and nothing more.
@@ -260,7 +257,7 @@ controlsSection context shipUI =
             , shipUI.maxSpeedButton |> Maybe.map (controlEntry "Maximum speed")
             ]
                 |> List.filterMap identity
-                |> List.filter (.actions >> List.all (.uiNode >> Common.isVisible))
+                |> List.filter (.target >> Maybe.map (.node >> Common.isVisible) >> Maybe.withDefault False)
     in
     if List.isEmpty entries then
         []
@@ -282,14 +279,14 @@ itself.
 -}
 controlEntry : String -> UITreeNodeWithDisplayRegion -> Common.Entry
 controlEntry fallbackLabel node =
-    { label =
-        node.uiNode
+    Common.controlActivateOnly
+        (node.uiNode
             |> EveOnline.ParseUserInterface.getHintTextFromDictEntries
             |> Maybe.andThen EveOnline.ParseUserInterface.discardUnreadableText
             |> Maybe.map Common.plainText
             |> Maybe.withDefault fallbackLabel
-    , actions = [ Common.activate node ]
-    }
+        )
+        node
 
 
 withoutRepeats : List String -> List String

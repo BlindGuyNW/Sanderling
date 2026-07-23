@@ -89,6 +89,25 @@ if (-not (Test-Path $sourcePath)) {
     return
 }
 
+<#
+VolatileProcess.csx references read-memory-64-bit by content hash. Because this fork's build is
+not in any published release, pine has no URL to fetch it from - it can only find it in its local
+blob library. Copy the committed assembly there, keyed by its own hash, so a cleared blob cache
+self-heals on the next deploy instead of failing to read with an opaque "assembly not found".
+This whole block goes away once a release carrying ReadPythonTypeHierarchy is pinned instead.
+#>
+$prebuiltReader = Join-Path $PSScriptRoot 'implement/read-memory-64-bit/prebuilt/read-memory-64-bit.dll'
+if (Test-Path $prebuiltReader) {
+    $blobLibrary = Join-Path $env:LOCALAPPDATA 'pine/.cache/blob-library/by-sha256'
+    $readerHash = (Get-FileHash $prebuiltReader -Algorithm SHA256).Hash.ToLower()
+    $blobPath = Join-Path $blobLibrary $readerHash
+    if (-not (Test-Path $blobPath)) {
+        New-Item -ItemType Directory -Force $blobLibrary | Out-Null
+        Copy-Item $prebuiltReader $blobPath -Force
+        Write-Host "Placed the local read-memory-64-bit build in pine's blob library ($readerHash)."
+    }
+}
+
 Stop-Existing -OnPort $Port
 
 Write-Host ""

@@ -58,29 +58,31 @@ tableHtml context overviewWindow =
         entries =
             entriesInOrder overviewWindow
 
-        {-
-           The actions column exists only when input can actually be sent. Reading a saved
-           memory reading has no route to a client, so adding the column then would put an
-           empty cell on every row and, worse, leave the header row a cell wider than the
-           body rows -- which is itself enough to confuse navigation by column.
-        -}
-        actionsHeader =
-            if context.inputRoute == Nothing then
-                []
-
-            else
-                [ Html.th [ HA.scope "col" ] [ Html.text "Actions" ] ]
-
         headerCells =
-            (headers |> List.map (\header -> Html.th [ HA.scope "col" ] [ Html.text header ]))
-                ++ actionsHeader
+            headers |> List.map (\header -> Html.th [ HA.scope "col" ] [ Html.text header ])
     in
     Html.table
         [ HA.style "border-collapse" "collapse" ]
         [ Html.caption [] [ Html.text (captionText entries) ]
         , Html.thead [] [ Html.tr [] headerCells ]
-        , Html.tbody [] (entries |> List.map (rowHtml context headers))
+        , Html.tbody [] (entries |> List.map (rowHtml context (handleColumn headers) headers))
         ]
+
+
+{-| The column whose cell is the row's one handle. The client models an overview row as a single
+object -- a click anywhere in it selects that object, a right-click opens its menu -- so the row
+has exactly one thing to act on, not one per cell. That handle goes on the name, which is already
+the row's identity; where the client's language leaves us no `Name` column, it falls to the first
+column so the row is still actionable. There is no separate actions column: the columns are for
+comparing objects, and the object itself is the name.
+-}
+handleColumn : List String -> Maybe String
+handleColumn headers =
+    if List.member "Name" headers then
+        Just "Name"
+
+    else
+        List.head headers
 
 
 captionText : List OverviewWindowEntry -> String
@@ -96,88 +98,38 @@ captionText entries =
             "Overview, " ++ String.fromInt count ++ " objects"
 
 
-rowHtml : Context event -> List String -> OverviewWindowEntry -> Html.Html event
-rowHtml context headers entry =
-    let
-        dataCells =
-            headers |> List.map (cellHtml entry)
-
-        actionCell =
-            case Common.actionButtons context (subjectOfEntry entry) (actionsOnEntry entry) of
-                [] ->
-                    []
-
-                buttons ->
-                    [ Html.td [] buttons ]
-    in
-    Html.tr (backgroundAttributes entry) (dataCells ++ actionCell)
-
-
-actionsOnEntry : OverviewWindowEntry -> List Common.Action
-actionsOnEntry entry =
-    [ Common.activate entry.uiNode, Common.menu entry.uiNode ]
+rowHtml : Context event -> Maybe String -> List String -> OverviewWindowEntry -> Html.Html event
+rowHtml context handleColumnName headers entry =
+    Html.tr (backgroundAttributes entry) (headers |> List.map (cellHtml context handleColumnName entry))
 
 
 {-| The cell for one column of one entry.
 
-The name cell is the row's header, so that moving down another column -- the usual way to find
-the nearest thing, or the fastest -- is announced against the object it belongs to instead of as
-a bare number.
+The handle column's cell is the row's header (`th scope="row"`) and carries the one control, so
+moving down another column -- the usual way to find the nearest thing, or the fastest -- is
+announced against the object it belongs to, and that same cell is where the row is acted on. A
+click on it selects the object, the context-menu gesture opens its menu; both target the whole
+row's node, which is how the client itself resolves a click anywhere in the row.
 
 The `"Name"` key is the client's own English column name, and is the same key
-`ParseUserInterface` reads `objectName` from. On a client running in another language the row
-simply has no header cell, which costs the announcement of the name and nothing else. Treat this
-as debt, in the sense of `CONVENTIONS.md` rule 4.
+`ParseUserInterface` reads `objectName` from; on a client running in another language the handle
+falls to the first column instead. Treat that as debt, in the sense of `CONVENTIONS.md` rule 4.
 
 -}
-cellHtml : OverviewWindowEntry -> String -> Html.Html event
-cellHtml entry header =
+cellHtml : Context event -> Maybe String -> OverviewWindowEntry -> String -> Html.Html event
+cellHtml context handleColumnName entry header =
     let
-        content =
-            [ entry.cellsTexts
+        value =
+            entry.cellsTexts
                 |> Dict.get header
                 |> Maybe.withDefault ""
                 |> Common.plainText
-                |> Html.text
-            ]
     in
-    if header == "Name" then
-        Html.th [ HA.scope "row" ] content
+    if Just header == handleColumnName then
+        Html.th [ HA.scope "row" ] [ Common.controlElement context.inputRoute value entry.uiNode True ]
 
     else
-        Html.td [] content
-
-
-{-| What the buttons on this row say they act on.
-
-The name alone is not always enough to tell two rows apart -- a belt of identical asteroids, or
-several wrecks -- so the type and the distance come along when the client is showing them.
-
--}
-subjectOfEntry : OverviewWindowEntry -> String
-subjectOfEntry entry =
-    let
-        described =
-            [ entry.objectName, entry.objectType, entry.objectDistance ]
-                |> List.filterMap identity
-                |> List.map Common.plainText
-                |> List.filter (String.isEmpty >> not)
-    in
-    case described of
-        [] ->
-            {-
-               A player whose overview shows none of the columns we know by name still gets
-               buttons that name their row, using whatever text the client put in it.
-            -}
-            case entry.textsLeftToRight |> List.map Common.plainText |> List.filter (String.isEmpty >> not) of
-                [] ->
-                    "this object"
-
-                texts ->
-                    String.join ", " texts
-
-        texts ->
-            String.join ", " texts
+        Html.td [] [ Html.text value ]
 
 
 {-| The client tints a row to mark it out -- a fleet member, something shooting at us.

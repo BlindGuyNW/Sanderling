@@ -71,6 +71,7 @@ type alias MemoryReadingCompletedStructure =
     { processId : Int
     , readingId : String
     , memoryReadingSerialRepresentationJson : Maybe String
+    , pythonTypeHierarchySerialRepresentationJson : Maybe String
     }
 
 
@@ -348,10 +349,11 @@ decodeReadFromWindowResult =
 
 decodeMemoryReadingCompleted : Json.Decode.Decoder MemoryReadingCompletedStructure
 decodeMemoryReadingCompleted =
-    Json.Decode.map3 MemoryReadingCompletedStructure
+    Json.Decode.map4 MemoryReadingCompletedStructure
         (Json.Decode.field "processId" Json.Decode.int)
         (Json.Decode.field "readingId" Json.Decode.string)
         (jsonDecode_optionalField "memoryReadingSerialRepresentationJson" Json.Decode.string)
+        (jsonDecode_optionalField "pythonTypeHierarchySerialRepresentationJson" Json.Decode.string)
 
 
 buildRequestStringToGetResponseFromVolatileHost : RequestToVolatileHost -> String

@@ -1,19 +1,19 @@
 module Frontend.View.Common exposing
-    ( Action
-    , Context
+    ( Context
     , Entry
-    , actionButtons
     , actionList
-    , activate
+    , control
+    , controlActivateOnly
+    , controlElement
     , heading
     , inReadingOrder
     , isVisible
     , nodesInReadingOrder
     , labelForControl
-    , menu
     , nested
     , noNameTable
     , plainText
+    , prose
     , section
     , textLines
     )
@@ -31,8 +31,8 @@ import EveOnline.ParseUserInterface exposing (UITreeNodeWithDisplayRegion)
 import Frontend.InspectParsedUserInterface exposing (InputOnUINode(..), InputRoute)
 import Html
 import Html.Attributes as HA
-import Html.Attributes.Aria
 import Html.Events as HE
+import Json.Decode
 import Regex
 
 
@@ -78,29 +78,47 @@ textLines lines =
         |> Html.ul []
 
 
-{-| Something the player can do to a node of the game client's user interface.
+{-| One thing in the game client, and what can be done to it.
+
+`target` is the node the player acts on, or `Nothing` when the entry is only there to be read.
+A single element carries both gestures the browser already gives every focusable thing -- a click
+sends a left-click, and the context-menu gesture (the Applications key, or a right mouse click)
+sends a right-click -- so there is one stop to land on, not a separate "Activate" and "Menu"
+button. `canMenu` is whether the right-click is offered at all: a few controls, such as a window's
+close button, have nothing behind a right-click.
+
 -}
-type alias Action =
-    { label : String
-    , uiNode : UITreeNodeWithDisplayRegion
-    , input : InputOnUINode
-    }
-
-
-activate : UITreeNodeWithDisplayRegion -> Action
-activate uiNode =
-    { label = "Activate", uiNode = uiNode, input = MouseClickLeft }
-
-
-menu : UITreeNodeWithDisplayRegion -> Action
-menu uiNode =
-    { label = "Menu", uiNode = uiNode, input = MouseClickRight }
-
-
 type alias Entry =
     { label : String
-    , actions : List Action
+    , target : Maybe ControlTarget
     }
+
+
+type alias ControlTarget =
+    { node : UITreeNodeWithDisplayRegion
+    , canMenu : Bool
+    }
+
+
+{-| A control the player can activate and open a context menu on -- the common case.
+-}
+control : String -> UITreeNodeWithDisplayRegion -> Entry
+control label node =
+    { label = label, target = Just { node = node, canMenu = True } }
+
+
+{-| A control the player can only activate, with no context menu behind it.
+-}
+controlActivateOnly : String -> UITreeNodeWithDisplayRegion -> Entry
+controlActivateOnly label node =
+    { label = label, target = Just { node = node, canMenu = False } }
+
+
+{-| Text that is only there to be read, with nothing to act on.
+-}
+prose : String -> Entry
+prose label =
+    { label = label, target = Nothing }
 
 
 {-| A list of things in the game client, each with the actions we can perform on it.
@@ -135,7 +153,7 @@ collapseEntriesSharingRegion entries =
     entries
         |> List.foldl
             (\entry ( kept, seenRegions ) ->
-                case entry.actions |> List.head |> Maybe.map (.uiNode >> .totalDisplayRegion) of
+                case entry.target |> Maybe.map (.node >> .totalDisplayRegion) of
                     Nothing ->
                         ( entry :: kept, seenRegions )
 
@@ -151,58 +169,53 @@ collapseEntriesSharingRegion entries =
         |> List.reverse
 
 
-{-| The buttons for what can be done to one thing, named after the thing they act on.
+{-| One control, as a single focusable element whose accessible name is its own label.
 
-Lists are not the only shape a view takes -- the overview is a table, because its columns are
-what the player compares entries by -- so this is separate from `actionList`, to keep every
-button on the page labelled the same way wherever it ends up.
+A click sends a left-click to the node; the context-menu gesture -- the Applications key, or a
+right mouse click -- sends a right-click when `canMenu`. This is the browser's own pairing of
+Enter and Shift+F10 on any focusable element, so the whole control is one stop rather than a label
+followed by separate "Activate" and "Menu" buttons. `preventDefaultOn` suppresses the browser's
+own context menu so the game gets the right-click instead.
 
-When there is no input route the result is empty. Callers that lay out columns should use that
-to leave the column out altogether, rather than emitting a column of empty cells.
+Without an input route -- a reading loaded from a file -- it is the plain label, so a saved reading
+still reads, only without anything to press.
+
+This is shared so the overview table, which lays its controls out as cells rather than as a list,
+labels and wires them exactly the way the list views do.
 
 -}
-actionButtons : Context event -> String -> List Action -> List (Html.Html event)
-actionButtons context subject actions =
-    case context.inputRoute of
+controlElement : Maybe (InputRoute event) -> String -> UITreeNodeWithDisplayRegion -> Bool -> Html.Html event
+controlElement maybeInputRoute label node canMenu =
+    case maybeInputRoute of
         Nothing ->
-            []
+            Html.text label
 
         Just inputRoute ->
-            actions
-                |> List.map
-                    (\action ->
-                        Html.button
-                            [ HE.onClick (inputRoute action.uiNode action.input)
-
-                            {-
-                               The button says only what it does, and names what it acts on
-                               to a screen reader separately. Putting the whole label in the
-                               button text reads the entry three times over, and some of
-                               these labels are a paragraph long.
-                            -}
-                            , Html.Attributes.Aria.ariaLabel (action.label ++ " " ++ shortened subject)
+            Html.button
+                (HE.onClick (inputRoute node MouseClickLeft)
+                    :: (if canMenu then
+                            [ HE.preventDefaultOn "contextmenu"
+                                (Json.Decode.succeed ( inputRoute node MouseClickRight, True ))
                             ]
-                            [ Html.text action.label ]
-                    )
+
+                        else
+                            []
+                       )
+                )
+                [ Html.text label ]
 
 
 entryHtml : Context event -> Entry -> Html.Html event
 entryHtml context entry =
     Html.li
         [ HA.style "margin" "0.2em 0" ]
-        (Html.text entry.label :: actionButtons context entry.label entry.actions)
+        [ case entry.target of
+            Nothing ->
+                Html.text entry.label
 
-
-{-| Enough of a label to tell one entry from its neighbours, for places where repeating the whole
-of it would drown out everything else.
--}
-shortened : String -> String
-shortened text =
-    if String.length text <= 60 then
-        text
-
-    else
-        (text |> String.left 60 |> String.trimRight) ++ "..."
+            Just target ->
+                controlElement context.inputRoute entry.label target.node target.canMenu
+        ]
 
 
 {-| The label to present for a control, preferring what the game client itself says over anything

@@ -109,6 +109,12 @@ type alias ParseMemoryReadingSuccess =
     { uiTree : EveOnline.MemoryReading.UITreeNode
     , uiNodesWithDisplayRegion : Dict.Dict String UITreeNodeWithDisplayRegion
     , parsedUserInterface : EveOnline.ParseUserInterface.ParsedUserInterface
+
+    {- The client's class inheritance, keyed by type name, most-derived first. Empty for a
+       reading loaded from a file, which carries no hierarchy - the views that use it fall back
+       to what they can tell from the tree alone.
+    -}
+    , typeHierarchy : Dict.Dict String (List String)
     }
 
 
@@ -258,7 +264,7 @@ update event stateBefore =
             let
                 memoryReading =
                     { serialRepresentationJson = serialRepresentationJson
-                    , parseResult = serialRepresentationJson |> parseMemoryReadingFromJson
+                    , parseResult = serialRepresentationJson |> parseMemoryReadingFromJson Dict.empty
                     }
             in
             ( { stateBefore | readFromFileResult = Just memoryReading }, Cmd.none )
@@ -509,7 +515,12 @@ integrateBackendResponse { request, result } stateBefore =
                                             { windowId = readFromWindow.windowId
                                             , memoryReading =
                                                 { serialRepresentationJson = memoryReadingSerialRepresentationJson
-                                                , parseResult = memoryReadingSerialRepresentationJson |> parseMemoryReadingFromJson
+                                                , parseResult =
+                                                    memoryReadingSerialRepresentationJson
+                                                        |> parseMemoryReadingFromJson
+                                                            (decodePythonTypeHierarchyFromJson
+                                                                readingCompleted.pythonTypeHierarchySerialRepresentationJson
+                                                            )
                                                 }
                                             }
                             )
@@ -993,7 +1004,7 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                                , displayParsedContextMenus maybeInputRoute memoryReading.parsedUserInterface.contextMenus
                                , verticalSpacerFromHeightInEm 0.5
                                ]
-                            ++ displayOtherWindows maybeInputRoute memoryReading.parsedUserInterface
+                            ++ displayOtherWindows maybeInputRoute memoryReading.typeHierarchy memoryReading.parsedUserInterface
                         )
 
                 ViewUITree ->
@@ -1084,16 +1095,16 @@ displayMessageBox context messageBox =
                 |> Frontend.View.Common.inReadingOrder
                 |> List.map
                     (\button ->
-                        { label =
-                            button.mainText
+                        Frontend.View.Common.controlActivateOnly
+                            (button.mainText
                                 |> Maybe.andThen EveOnline.ParseUserInterface.discardUnreadableText
                                 |> Maybe.withDefault
                                     (Frontend.View.Common.labelForControl
                                         Frontend.View.Common.noNameTable
                                         button.uiNode
                                     )
-                        , actions = [ Frontend.View.Common.activate button.uiNode ]
-                        }
+                            )
+                            button.uiNode
                     )
     in
     [ Frontend.View.Common.textLines messageLines
@@ -1106,8 +1117,8 @@ displayMessageBox context messageBox =
 through the generic window shell. Which windows exist and in what order comes from the client's
 own layer stack, so a window we have never seen before still turns up in the right place.
 -}
-displayOtherWindows : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.ParsedUserInterface -> List (Html.Html Event)
-displayOtherWindows maybeInputRouteConfig parsedUserInterface =
+displayOtherWindows : Maybe InputRouteConfig -> Dict.Dict String (List String) -> EveOnline.ParseUserInterface.ParsedUserInterface -> List (Html.Html Event)
+displayOtherWindows maybeInputRouteConfig typeHierarchy parsedUserInterface =
     let
         context =
             viewContextFromInputRouteConfig maybeInputRouteConfig 3
@@ -1144,7 +1155,7 @@ displayOtherWindows maybeInputRouteConfig parsedUserInterface =
             context
             "Other windows"
             (\contextForContent ->
-                windows |> List.map (Frontend.View.GenericWindow.view contextForContent)
+                windows |> List.map (Frontend.View.GenericWindow.view typeHierarchy contextForContent)
             )
         ]
 
@@ -1192,19 +1203,8 @@ displayReadInventoryWindow maybeInputRouteConfig inventoryWindow =
                         ( Nothing, _ ) ->
                             "Unnamed item"
 
-                actionsHtml =
-                    case maybeInputRoute of
-                        Nothing ->
-                            []
-
-                        Just inputRoute ->
-                            [ [ "Select" |> Html.text ]
-                                |> Html.button [ HE.onClick (inputRoute item.uiNode MouseClickLeft) ]
-                            , [ "Menu" |> Html.text ]
-                                |> Html.button [ HE.onClick (inputRoute item.uiNode MouseClickRight) ]
-                            ]
             in
-            ((labelText |> Html.text) :: actionsHtml)
+            [ Frontend.View.Common.controlElement maybeInputRoute labelText item.uiNode True ]
                 |> Html.li [ HA.style "margin" "0.2em 0" ]
 
         itemsHtml =
@@ -2180,8 +2180,8 @@ arrowKeyTypeFromKeyCode keyCode =
         |> Dict.get keyCode
 
 
-parseMemoryReadingFromJson : String -> Result Json.Decode.Error ParseMemoryReadingSuccess
-parseMemoryReadingFromJson =
+parseMemoryReadingFromJson : Dict.Dict String (List String) -> String -> Result Json.Decode.Error ParseMemoryReadingSuccess
+parseMemoryReadingFromJson typeHierarchy =
     EveOnline.MemoryReading.decodeMemoryReadingFromString
         >> Result.map
             (\uiTree ->
@@ -2199,8 +2199,25 @@ parseMemoryReadingFromJson =
                         |> List.map (\uiNodeWithRegion -> ( uiNodeWithRegion.uiNode.pythonObjectAddress, uiNodeWithRegion ))
                         |> Dict.fromList
                 , parsedUserInterface = parsedUserInterface
+                , typeHierarchy = typeHierarchy
                 }
             )
+
+
+{-| The type hierarchy arrives from the live client as its own JSON string: an object mapping each
+type name to its inheritance chain. Absent (a file reading) or unreadable, it is simply empty, and
+the views that consult it fall back to what the tree alone tells them.
+-}
+decodePythonTypeHierarchyFromJson : Maybe String -> Dict.Dict String (List String)
+decodePythonTypeHierarchyFromJson maybeJson =
+    case maybeJson of
+        Nothing ->
+            Dict.empty
+
+        Just json ->
+            json
+                |> Json.Decode.decodeString (Json.Decode.dict (Json.Decode.list Json.Decode.string))
+                |> Result.withDefault Dict.empty
 
 
 globalStylesHtmlElement : Html.Html a

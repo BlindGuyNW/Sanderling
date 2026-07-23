@@ -21,6 +21,7 @@ prose, and prose gets no buttons.
 
 -}
 
+import Dict
 import EveOnline.ParseUserInterface exposing (GenericWindow, UITreeNodeWithDisplayRegion)
 import Frontend.View.Common as Common exposing (Context)
 import Html
@@ -78,9 +79,9 @@ type alias ProseText =
     }
 
 
-view : Context event -> GenericWindow -> Html.Html event
-view context window =
-    Common.section context (titleForWindow window) (bodyHtml window)
+view : Dict.Dict String (List String) -> Context event -> GenericWindow -> Html.Html event
+view typeHierarchy context window =
+    Common.section context (titleForWindow window) (bodyHtml typeHierarchy window)
 
 
 titleForWindow : GenericWindow -> String
@@ -98,8 +99,8 @@ titleForWindow window =
                     window.typeName
 
 
-bodyHtml : GenericWindow -> Context event -> List (Html.Html event)
-bodyHtml window context =
+bodyHtml : Dict.Dict String (List String) -> GenericWindow -> Context event -> List (Html.Html event)
+bodyHtml typeHierarchy window context =
     let
         headerButtonEntries =
             window.headerButtons
@@ -107,13 +108,13 @@ bodyHtml window context =
                 |> Common.inReadingOrder
                 |> List.map
                     (\button ->
-                        { label = Common.labelForControl Common.noNameTable button.uiNode
-                        , actions = [ Common.activate button.uiNode ]
-                        }
+                        Common.controlActivateOnly
+                            (Common.labelForControl Common.noNameTable button.uiNode)
+                            button.uiNode
                     )
 
         allItems =
-            contentItems window
+            contentItems typeHierarchy window
 
         shownItems =
             allItems |> List.take maximumNumberOfContentEntries
@@ -213,63 +214,137 @@ entryOfItem item =
             Just entry
 
         Prose prose ->
-            Just { label = prose.text, actions = [] }
+            Just (Common.prose prose.text)
 
         Group _ ->
             Nothing
 
 
-contentItems : GenericWindow -> List ContentItem
-contentItems window =
+contentItems : Dict.Dict String (List String) -> GenericWindow -> List ContentItem
+contentItems typeHierarchy window =
     case window.contentNode of
         Nothing ->
             []
 
         Just contentNode ->
-            itemsFromNode contentNode
+            (walk typeHierarchy contentNode).items
 
 
-{-| Walks a node, stopping at whatever the player acts on.
+{-| What a walk of one node found, and whether any of its subtree was a control candidate.
 
-Descending is the default, so a container we do not recognise still gives up everything inside
-it. Only a node that is itself a control ends the walk, and only for its own subtree.
+`hasCandidate` is what makes over-generous candidate detection safe. A candidate that contains
+another candidate is not a control but the container of one -- a `ButtonGroup` holding two
+`Button`s, a `CardsContainer` holding cards -- so it is descended into rather than read as a
+single control. Deciding that from the children's results is exactly what `hasCandidate` carries
+up. Measured against the Agency and fitting windows, no genuine control ever contains another
+candidate, so this demotion never swallows a real control.
+
+It also drives the text collapse below: a node is only offered as one all-text control when
+nothing beneath it was a candidate, so a section of prose is not mistaken for a button.
 
 -}
-itemsFromNode : UITreeNodeWithDisplayRegion -> List ContentItem
-itemsFromNode node =
+type alias WalkResult =
+    { items : List ContentItem
+    , hasCandidate : Bool
+    }
+
+
+walk : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> WalkResult
+walk typeHierarchy node =
     if not (Common.isVisible node) then
-        []
+        { items = [], hasCandidate = False }
 
     else if isGroupHeading node then
-        case textOfSubtree node of
-            Nothing ->
-                []
-
-            Just title ->
-                [ Group title ]
-
-    else if isInteractiveUnit node then
-        case textOfSubtree node of
-            Nothing ->
-                []
-
-            Just label ->
-                [ Control { label = label, actions = [ Common.activate node, Common.menu node ] } ]
+        { items = textOfSubtree node |> Maybe.map (Group >> List.singleton) |> Maybe.withDefault []
+        , hasCandidate = True
+        }
 
     else
         let
-            fromChildren =
+            childResults =
                 node
                     |> EveOnline.ParseUserInterface.listChildrenWithDisplayRegion
                     |> Common.nodesInReadingOrder
-                    |> List.concatMap itemsFromNode
-        in
-        case ( fromChildren, ownText node ) of
-            ( [], Just text ) ->
-                [ Prose { text = text, position = positionOfNode node } ]
+                    |> List.map (walk typeHierarchy)
 
-            _ ->
-                mergeProseRuns fromChildren
+            childItems =
+                childResults |> List.concatMap .items
+
+            descendantHasCandidate =
+                childResults |> List.any .hasCandidate
+
+            nodeIsCandidate =
+                isControlCandidate typeHierarchy node
+        in
+        if nodeIsCandidate && not descendantHasCandidate then
+            --  A candidate with no candidate inside it is the control itself; its whole subtree
+            --  is its label, and we do not descend past it.
+            { items =
+                textOfSubtree node
+                    |> Maybe.map (\label -> [ Control (Common.control label node) ])
+                    |> Maybe.withDefault []
+            , hasCandidate = True
+            }
+
+        else if nodeIsCandidate || descendantHasCandidate then
+            --  Either a candidate that holds candidates (a container of controls, descended into)
+            --  or a plain container with controls somewhere below: keep what the children found.
+            { items = mergeProseRuns childItems, hasCandidate = True }
+
+        else
+            case collapsedControlForNode node childItems of
+                Just item ->
+                    { items = [ item ], hasCandidate = False }
+
+                Nothing ->
+                    case ( childItems, ownText node ) of
+                        ( [], Just text ) ->
+                            { items = [ Prose { text = text, position = positionOfNode node } ]
+                            , hasCandidate = False
+                            }
+
+                        _ ->
+                            { items = mergeProseRuns childItems, hasCandidate = False }
+
+
+{-| A container holding nothing but text is itself one thing the player can act on.
+
+`isInteractiveUnit` recognises a control by the type the client built it as, which means it only
+knows the kinds of control someone has already seen. That list was wrong about the Agency window's
+mission cards: an `AgentMissionCard` holds only text, matched none of the markers, and so came out
+as prose with no buttons -- which took away the only route to its right-click menu, and that menu
+is where `Start Conversation` lives. Accepting a mission was unreachable. Observed 2026-07-22.
+
+So rather than rely on having named every type, treat the shape as a second signal. A container
+whose whole subtree is text is a leaf as far as the player is concerned, and in this client that is
+almost always a card, a row or a tile -- something with a right-click menu, because in EVE
+right-click acts on a region rather than on a widget. Offering the menu costs an entry that may do
+nothing; not offering it costs the player the action entirely, and rule 1a is clear about which way
+that trade goes.
+
+Only containers collapse. A lone text node stays prose, or every label on the page would sprout a
+pair of buttons -- which is the noise this whole walk exists to remove.
+
+Past the merge limit the container is a page of text rather than a card, so it keeps its separate
+lines instead.
+
+-}
+collapsedControlForNode : UITreeNodeWithDisplayRegion -> List ContentItem -> Maybe ContentItem
+collapsedControlForNode node childItems =
+    if List.isEmpty childItems then
+        Nothing
+
+    else
+        case textOfSubtree node of
+            Nothing ->
+                Nothing
+
+            Just label ->
+                if maximumMergedProseLength < String.length label then
+                    Nothing
+
+                else
+                    Just (Control (Common.control label node))
 
 
 positionOfNode : UITreeNodeWithDisplayRegion -> ( Int, Int )
@@ -390,30 +465,98 @@ isGroupHeading node =
 
 {-| Something the player acts on, whose insides are its label rather than things of their own.
 
-This is shaped from the type the client builds the control as, rather than from a table of names,
-so it keeps working when the client gains a kind of control nobody here has seen. Getting it wrong
-in the generous direction costs a button that does nothing; getting it wrong in the strict
-direction costs the player the only way to act on something, so it leans generous.
+Three independent signals, in order of how much we trust them:
 
-Carrying a tooltip is deliberately *not* part of this. A tooltip means the client has something to
-say about a node, not that there is anything to do to it -- the same distinction `CONVENTIONS.md`
-rule 6 draws when it says a tooltip is not content. Treating it as a control marker put Activate
-and Menu on the daily-bonus gauge in the Agency window, whose `_hint` reads "Complete two goals on
-the same day and earn unallocated skill points as an added bonus". That is an explanation, and the
-gauge showing `0/2` is not a button. Observed 2026-07-22.
+1.  **Inheritance.** The client builds each widget from a class, and stores that class's ancestry.
+    `TrackJobButton` derives from `Button`; `ButtonGroup` and `ButtonWrapper` do not -- they are
+    the container and the wrapper around it. The name cannot tell those apart (`ButtonUnderlay`,
+    decoration, also contains "Button"), and an earlier substring test on the name got this exactly
+    wrong: it flagged the underlay, which made the real button look like a container and demoted it,
+    so `Track` and `Start Conversation` collapsed into one dead line. Matching a *family root* in
+    the inheritance chain, by identity, catches the button and excludes the group, the wrapper and
+    the underlay. `familyRootsOfControls` is that set of base classes.
 
-The header buttons a window carries are found by their tooltips, but that happens in
-`parseGenericWindow` and reaches the page by a different path, so they are unaffected.
+2.  **A link.** A `Link` object, or text carrying the client's own `<a href>` / `<url=>` / `<url:>`
+    markup, is a handle to a game object -- a system, a station, an agent -- and the client makes
+    each its own node. Left-click shows the object, right-click opens its menu, exactly as for any
+    other control, so a link is one of these.
+
+3.  **An exact type name.** A few controls -- `GroupAllButton`, `SidePanelButton` -- derive straight
+    from `Container` with no distinctive base, so inheritance cannot find them. They are named
+    individually, matched by equality. Never by substring: that is what broke signal 1.
+
+Getting this wrong in the generous direction costs a control that does nothing; getting it wrong in
+the strict direction costs the player the only way to act on something, so it leans generous. A
+node that holds another candidate is demoted to a container by `walk`, which is what keeps the
+generosity safe.
+
+Carrying a tooltip is deliberately *not* a signal. A tooltip means the client has something to say
+about a node, not that there is anything to do to it -- the same distinction `CONVENTIONS.md` rule 6
+draws. Treating it as one put actions on the daily-bonus gauge in the Agency window, whose `_hint`
+explains the bonus; the gauge showing `0/2` is not a button. Observed 2026-07-22.
+
+Treat `familyRootsOfControls` and `controlTypeNames` as the debt `CONVENTIONS.md` rule 4 describes:
+each is a claim about how the client names its classes, and each will need revisiting -- but a claim
+about a base class the client itself defines, matched by identity, not a guess at a substring.
 
 -}
-isInteractiveUnit : UITreeNodeWithDisplayRegion -> Bool
-isInteractiveUnit node =
+isControlCandidate : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> Bool
+isControlCandidate typeHierarchy node =
     let
         typeName =
             node.uiNode.pythonObjectTypeName
+
+        inheritanceChain =
+            Dict.get typeName typeHierarchy |> Maybe.withDefault [ typeName ]
     in
-    List.any (\marker -> String.contains marker typeName)
-        [ "Entry", "Button", "MenuItem", "Tab", "Checkbox", "Radio" ]
+    isLinkNode node
+        || List.member typeName controlTypeNames
+        || List.any (\root -> List.member root inheritanceChain) familyRootsOfControls
+
+
+{-| The client base classes that mark a family of controls, matched anywhere in a type's ancestry.
+These are classes the client itself defines; a new leaf type in one of these families is caught
+with no change here. Observed in the Agency and fitting windows, 2026-07-22.
+-}
+familyRootsOfControls : List String
+familyRootsOfControls =
+    [ "Button" -- ordinary buttons, and TrackJobButton, MenuButton, ...
+    , "BaseNeocomButton" -- the neocom sidebar buttons, none of which derive from Button
+    , "LeftSideButton" -- the in-space ship control buttons
+    , "ButtonIcon" -- icon-only buttons: filters, close/minimize, ...
+    , "Tab" -- window tabs of every kind
+    , "JobCard" -- Agency mission / campaign / daily-goal cards
+    , "SE_BaseClassCore" -- scroll-list entries: overview rows, chat entries, ship lists
+    , "SideNavigationEntryInterface" -- side-navigation entries
+    , "FittingSlotBase" -- the module slots in the fitting window
+    , "BaseToggleButtonGroupButton" -- toggle buttons, e.g. the fitting hull/module/charge switch
+    , "BaseSingleLineEdit" -- single-line text fields, e.g. a search box
+    ]
+
+
+{-| Controls the client builds straight from `Container` with no distinctive base, so inheritance
+cannot find them. Matched by equality, never substring -- `ButtonUnderlay` is decoration, and a
+substring test on "Button" wrongly claims it, which demotes the real button that contains it.
+-}
+controlTypeNames : List String
+controlTypeNames =
+    [ "GroupAllButton", "SidePanelButton", "ExpandButton", "SafetyButton", "ModuleButton" ]
+
+
+{-| A `Link` object, or text carrying the client's own link markup. The markup is checked before it
+is stripped for display, and takes any of the three forms the client emits.
+-}
+isLinkNode : UITreeNodeWithDisplayRegion -> Bool
+isLinkNode node =
+    (node.uiNode.pythonObjectTypeName == "Link")
+        || (case EveOnline.ParseUserInterface.getDisplayText node.uiNode of
+                Nothing ->
+                    False
+
+                Just rawText ->
+                    [ "<a href=", "<url=", "<url:" ]
+                        |> List.any (\marker -> String.contains marker rawText)
+           )
 
 
 {-| All the text inside a node, as one label.
