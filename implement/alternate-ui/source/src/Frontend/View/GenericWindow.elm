@@ -93,10 +93,62 @@ titleForWindow window =
         Nothing ->
             case window.name of
                 Just name ->
-                    name
+                    handWrittenNames name |> Maybe.withDefault name
 
                 Nothing ->
                     window.typeName
+
+
+{-| Names for the nodes whose label the client only supplies on hover, so a reading finds nothing
+to call them by except their internal `_name`. The debt `CONVENTIONS.md` rule 4 describes: each
+entry is a claim observed on a real client, English-only, and comes out as soon as the client is
+seen to supply the name itself.
+
+The station service buttons and `lobbyWnd` were observed docked on 2026-07-21; `agentChatBtn`
+in the station window's Agents panel on 2026-07-23.
+
+-}
+handWrittenNames : String -> Maybe String
+handWrittenNames name =
+    case name of
+        "lobbyWnd" ->
+            Just "Station"
+
+        "agentChatBtn" ->
+            Just "Start Conversation"
+
+        "charcustomization" ->
+            Just "Character Customization"
+
+        "fitting" ->
+            Just "Fitting"
+
+        "industry" ->
+            Just "Industry"
+
+        "insurance" ->
+            Just "Insurance"
+
+        "lpstore" ->
+            Just "LP Store"
+
+        "market" ->
+            Just "Market"
+
+        "medical" ->
+            Just "Medical"
+
+        "navyoffices" ->
+            Just "Navy Offices"
+
+        "repairshop" ->
+            Just "Repair Shop"
+
+        "reprocessingPlant" ->
+            Just "Reprocessing Plant"
+
+        _ ->
+            Nothing
 
 
 bodyHtml : Dict.Dict String (List String) -> GenericWindow -> Context event -> List (Html.Html event)
@@ -278,11 +330,18 @@ walk typeHierarchy node =
         in
         if nodeIsCandidate && not descendantHasCandidate then
             --  A candidate with no candidate inside it is the control itself; its whole subtree
-            --  is its label, and we do not descend past it.
+            --  is its label, and we do not descend past it. A control with no text at all is
+            --  still a control -- the station service buttons are icon-only -- so it falls back
+            --  to the client's tooltip or its internal name rather than being dropped.
             { items =
-                textOfSubtree node
-                    |> Maybe.map (\label -> [ Control (Common.control label node) ])
-                    |> Maybe.withDefault []
+                [ Control
+                    (Common.control
+                        (textOfSubtree node
+                            |> Maybe.withDefault (Common.labelForControl handWrittenNames node)
+                        )
+                        node
+                    )
+                ]
             , hasCandidate = True
             }
 

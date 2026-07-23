@@ -990,15 +990,6 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                                             ]
                                         )
                                )
-                            ++ (case memoryReading.parsedUserInterface.stationWindow of
-                                    Nothing ->
-                                        []
-
-                                    Just stationWindow ->
-                                        [ displayReadStationWindow maybeInputRoute stationWindow
-                                        , verticalSpacerFromHeightInEm 0.5
-                                        ]
-                               )
                             ++ displayOverviewWindows maybeInputRoute memoryReading.parsedUserInterface.overviewWindows
                             ++ [ [ ((memoryReading.parsedUserInterface.contextMenus |> List.length |> String.fromInt) ++ " Context menus") |> Html.text ] |> Html.h3 []
                                , displayParsedContextMenus maybeInputRoute memoryReading.parsedUserInterface.contextMenus
@@ -1125,7 +1116,6 @@ displayOtherWindows maybeInputRouteConfig typeHierarchy parsedUserInterface =
 
         addressesShownSeparately =
             [ parsedUserInterface.inventoryWindows |> List.map .uiNode
-            , parsedUserInterface.stationWindow |> Maybe.map List.singleton |> Maybe.withDefault [] |> List.map .uiNode
             , parsedUserInterface.overviewWindows |> List.map .uiNode
             ]
                 |> List.concat
@@ -1430,91 +1420,6 @@ displayOrientation maybeInputRouteConfig parsedUserInterface =
     , missionsHtml |> Html.div []
     ]
         |> Html.div []
-
-
-displayReadStationWindow : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.StationWindow -> Html.Html Event
-displayReadStationWindow maybeInputRouteConfig stationWindow =
-    let
-        maybeInputRoute =
-            maybeInputRouteConfig |> Maybe.map inputRouteFromInputConfig
-
-        entryHtml labelText uiNode =
-            (case maybeInputRoute of
-                Nothing ->
-                    [ labelText |> Html.text ]
-
-                Just inputRoute ->
-                    [ [ labelText |> Html.text ]
-                        |> Html.button [ HE.onClick (inputRoute uiNode MouseClickLeft) ]
-                    ]
-            )
-                |> Html.li [ HA.style "margin" "0.2em 0" ]
-
-        undockEntriesHtml =
-            case stationWindow.abortUndockButton of
-                Just abortUndockButton ->
-                    [ entryHtml "Abort undock" abortUndockButton ]
-
-                Nothing ->
-                    case stationWindow.undockButton of
-                        Just undockButton ->
-                            [ entryHtml "Undock" undockButton ]
-
-                        Nothing ->
-                            []
-
-        serviceEntriesHtml =
-            stationWindow.serviceButtons
-                |> List.map
-                    (\serviceButton ->
-                        entryHtml (displayTextForStationServiceName serviceButton.name) serviceButton.uiNode
-                    )
-    in
-    [ [ "Station" |> Html.text ] |> Html.h3 []
-    , (undockEntriesHtml ++ serviceEntriesHtml)
-        |> Html.ul [ HA.style "list-style" "none", HA.style "padding-inline-start" "0" ]
-    ]
-        |> Html.div []
-
-
-{-| Map the internal names of the station service buttons to the labels players see in the game client.
-Names observed in a reading from a docked client on 2026-07-21.
--}
-displayTextForStationServiceName : String -> String
-displayTextForStationServiceName name =
-    case name of
-        "charcustomization" ->
-            "Character Customization"
-
-        "fitting" ->
-            "Fitting"
-
-        "industry" ->
-            "Industry"
-
-        "insurance" ->
-            "Insurance"
-
-        "lpstore" ->
-            "LP Store"
-
-        "market" ->
-            "Market"
-
-        "medical" ->
-            "Medical"
-
-        "navyoffices" ->
-            "Navy Offices"
-
-        "repairshop" ->
-            "Repair Shop"
-
-        "reprocessingPlant" ->
-            "Reprocessing Plant"
-
-        other ->
-            other
 
 
 {-| The overview, which the client shows one of per overview tab.
