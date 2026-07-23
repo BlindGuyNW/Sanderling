@@ -9,8 +9,13 @@ visible from the UI tree - the tree keeps reading fine while every click is disc
   - the window is MINIMIZED (client rect 0x0). Nothing can be driven at all.
   - the real cursor is OUTSIDE the client area (title bar counts as outside). Mouse
     messages are dropped; keyboard still works.
+  - the process is HUNG: its message pump has stopped, so every posted message queues
+    forever - while ReadProcessMemory needs no message pump, so the UI tree keeps reading
+    perfectly and the readings look completely healthy. Added 2026-07-23 after an episode
+    of exactly that symptom whose cause was never confirmed; this check exists so the
+    hung-pump hypothesis takes seconds to test instead of an hour.
 
-Both cost real debugging time to find, so check here first.
+Each cost real debugging time to find, so check here first.
 
 .PARAMETER ProcessId
 Game client process id. Defaults to the first process named 'exefile'.
@@ -40,6 +45,7 @@ public struct RECT { public int Left, Top, Right, Bottom; }
 [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
 [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref POINT p);
+[DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr hWnd);
 [StructLayout(LayoutKind.Sequential)]
 public struct POINT { public int X, Y; }
 '@
@@ -107,6 +113,16 @@ if (-not $gameWindow) {
 }
 
 $problems = New-Object System.Collections.ArrayList
+
+<#
+A hung process is the treacherous case: memory reads need no message pump, so the UI tree
+keeps reading perfectly while every posted message queues unprocessed. Nothing about the
+readings reveals it. IsHungAppWindow is Windows' own definition - no message processed in
+about five seconds.
+#>
+if ([GameWindowProbe.Api]::IsHungAppWindow($gameWindow)) {
+    [void]$problems.Add("Window is NOT RESPONDING (message pump stopped ~5s+ ago). Posted input queues forever while memory readings continue to look perfectly healthy. The client is hung or dying; input cannot work until it recovers or restarts.")
+}
 
 if ([GameWindowProbe.Api]::IsIconic($gameWindow)) {
     [void]$problems.Add("Window is MINIMIZED. No input of any kind can be delivered. Restoring it also steals focus, so this has to be resolved by hand.")
