@@ -17,6 +17,7 @@ import Frontend.InspectParsedUserInterface
     exposing
         ( ExpandableViewNode
         , InputOnUINode(..)
+        , InputRoute
         , ParsedUITreeViewPathNode(..)
         , TreeViewNode
         , TreeViewNodeChildren(..)
@@ -1472,11 +1473,80 @@ displayParsedContextMenus maybeInputRoute contextMenus =
 displayParsedContextMenu : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.ContextMenu -> Html.Html Event
 displayParsedContextMenu maybeInputRouteConfig contextMenu =
     contextMenu.entries
-        |> List.map
-            (\menuEntry ->
-                [ menuEntry.text |> Html.text, maybeInputOfferHtml (maybeInputRouteConfig |> Maybe.map inputRouteFromInputConfig) [ MouseClickLeft ] menuEntry.uiNode ]
-                    |> Html.div []
+        |> List.map (contextMenuEntryHtml (maybeInputRouteConfig |> Maybe.map inputRouteFromInputConfig))
+        |> Html.div []
+
+
+{-| One menu entry, as a single button the way `Common.controlElement` presents controls.
+
+The states the client draws are carried as attributes rather than words: a checkable entry is a
+toggle button (`aria-pressed`), so a screen reader announces `Distance, toggle button, pressed`
+against `Tag, toggle button, not pressed`; an entry that opens a submenu announces that via
+`aria-haspopup`. Without an input route there is no button to carry the attributes, so the states
+become words after the label -- a reading loaded from a file still tells which columns were on.
+
+-}
+contextMenuEntryHtml : Maybe (InputRoute Event) -> EveOnline.ParseUserInterface.ContextMenuEntry -> Html.Html Event
+contextMenuEntryHtml maybeInputRoute menuEntry =
+    let
+        stateAttributes =
+            (case menuEntry.checkState of
+                Nothing ->
+                    []
+
+                Just checked ->
+                    [ HA.attribute "aria-pressed"
+                        (if checked then
+                            "true"
+
+                         else
+                            "false"
+                        )
+                    ]
             )
+                ++ (if menuEntry.opensSubmenu then
+                        [ HA.attribute "aria-haspopup" "menu" ]
+
+                    else
+                        []
+                   )
+
+        stateWords =
+            (case menuEntry.checkState of
+                Nothing ->
+                    []
+
+                Just True ->
+                    [ "on" ]
+
+                Just False ->
+                    [ "off" ]
+            )
+                ++ (if menuEntry.opensSubmenu then
+                        [ "submenu" ]
+
+                    else
+                        []
+                   )
+    in
+    [ case maybeInputRoute of
+        Nothing ->
+            (menuEntry.text
+                :: (if List.isEmpty stateWords then
+                        []
+
+                    else
+                        [ "(" ++ String.join ", " stateWords ++ ")" ]
+                   )
+            )
+                |> String.join " "
+                |> Html.text
+
+        Just inputRoute ->
+            Html.button
+                (HE.onClick (inputRoute menuEntry.uiNode MouseClickLeft) :: stateAttributes)
+                [ menuEntry.text |> Html.text ]
+    ]
         |> Html.div []
 
 

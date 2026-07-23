@@ -97,6 +97,16 @@ type alias ContextMenu =
 type alias ContextMenuEntry =
     { uiNode : UITreeNodeWithDisplayRegion
     , text : String
+
+    {-
+       `Nothing` for a plain entry. For the checkable entries -- the client builds those as
+       `MenuEntryViewCheckbox` -- whether the box is currently checked. Observed 2026-07-23 in
+       the overview tab's Columns submenu.
+    -}
+    , checkState : Maybe Bool
+
+    --  Whether the entry opens a submenu, which the client marks with an arrow at the right edge.
+    , opensSubmenu : Bool
     }
 
 
@@ -1292,16 +1302,54 @@ parseContextMenu contextMenuUINode =
                 |> List.map
                     (\entryUINode ->
                         let
+                            descendants =
+                                entryUINode |> listDescendantsWithDisplayRegion
+
                             text =
-                                entryUINode
-                                    |> listDescendantsWithDisplayRegion
+                                descendants
                                     |> List.filterMap (.uiNode >> getDisplayText)
                                     |> List.sortBy (String.length >> negate)
                                     |> List.head
                                     |> Maybe.withDefault ""
+
+                            {-
+                               Checked is the presence of a sprite named `self_ok` in the entry's
+                               checkbox diode; an unchecked entry simply does not have the node.
+                               Observed 2026-07-23 in the overview tab's Columns submenu.
+                            -}
+                            checkState =
+                                if entryUINode.uiNode.pythonObjectTypeName |> String.contains "Checkbox" then
+                                    Just
+                                        (descendants
+                                            |> List.any
+                                                (.uiNode >> getNameFromDictEntries >> (==) (Just "self_ok"))
+                                        )
+
+                                else
+                                    Nothing
+
+                            {-
+                               The submenu arrow is an unnamed sprite at the entry's right edge.
+                               The right-half test is what separates it from the icons some
+                               entries carry on their left, which arrive as named nodes anyway.
+                            -}
+                            opensSubmenu =
+                                descendants
+                                    |> List.any
+                                        (\descendant ->
+                                            (descendant.uiNode.pythonObjectTypeName == "Sprite")
+                                                && ((descendant.uiNode |> getNameFromDictEntries) == Nothing)
+                                                && (entryUINode.totalDisplayRegion.x
+                                                        + entryUINode.totalDisplayRegion.width
+                                                        // 2
+                                                        < descendant.totalDisplayRegion.x
+                                                   )
+                                        )
                         in
                         { text = text
                         , uiNode = entryUINode
+                        , checkState = checkState
+                        , opensSubmenu = opensSubmenu
                         }
                     )
                 |> List.sortBy (.uiNode >> .totalDisplayRegion >> .y)
