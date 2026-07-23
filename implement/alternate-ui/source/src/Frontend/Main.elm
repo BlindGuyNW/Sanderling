@@ -1757,24 +1757,60 @@ displayInventoryMoveActions maybeInputRouteConfig parsedUserInterface =
                 ( Nothing, _ ) ->
                     "unnamed item"
 
+        {- Drop targets other windows offer: the reprocessing service takes its input by the
+           same drag gesture as the inventory containers, so while its window is open, every
+           item also offers a move into it. Labeled with the client's own caption inside the
+           container -- "Input materials". Observed 2026-07-23.
+        -}
+        dropTargetsOutsideInventory =
+            case parsedUserInterface.reprocessingWindow |> Maybe.andThen .inputContainer of
+                Nothing ->
+                    []
+
+                Just inputContainer ->
+                    if not (Frontend.View.Common.isVisible inputContainer) then
+                        []
+
+                    else
+                        [ { label =
+                                inputContainer
+                                    |> EveOnline.ParseUserInterface.getAllContainedDisplayTextsWithRegion
+                                    |> List.sortBy (Tuple.second >> .totalDisplayRegion >> (\region -> ( region.y, region.x )))
+                                    |> List.map (Tuple.first >> Frontend.View.Common.plainText)
+                                    |> List.filter (String.isEmpty >> not)
+                                    |> List.head
+                                    |> Maybe.withDefault "Reprocessing input"
+                          , node = inputContainer
+                          }
+                        ]
+
         moveEntriesForWindow inventoryWindow =
             let
                 items =
                     inventoryWindow.items
                         |> List.filter (.uiNode >> Frontend.View.Common.isVisible)
 
-                targets =
+                containerTargets =
                     inventoryWindow.leftTreeEntries
                         |> flattenTreeEntries
                         |> List.filter (entryHeaderNode >> Frontend.View.Common.isVisible)
                         |> List.filter (entryIsSelected >> not)
+                        |> List.map
+                            (\entry ->
+                                { label = Frontend.View.Common.plainText entry.text
+                                , node = entryHeaderNode entry
+                                }
+                            )
+
+                targets =
+                    containerTargets ++ dropTargetsOutsideInventory
 
                 moveEntry item target =
                     { label =
                         "Move "
                             ++ itemLabel item
                             ++ " to "
-                            ++ Frontend.View.Common.plainText target.text
+                            ++ target.label
                     , target =
                         Just
                             { node = item.uiNode
@@ -1782,7 +1818,7 @@ displayInventoryMoveActions maybeInputRouteConfig parsedUserInterface =
                             , activate =
                                 MouseDragTo
                                     (EveOnline.ParseUserInterface.centerFromDisplayRegion
-                                        (entryHeaderNode target).totalDisplayRegionVisible
+                                        target.node.totalDisplayRegionVisible
                                     )
                             }
                     , checkState = Nothing

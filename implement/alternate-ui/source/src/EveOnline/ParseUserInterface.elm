@@ -45,6 +45,7 @@ type alias ParsedUserInterface =
     , surveyScanWindow : Maybe SurveyScanWindow
     , bookmarkLocationWindow : Maybe BookmarkLocationWindow
     , repairShopWindow : Maybe RepairShopWindow
+    , reprocessingWindow : Maybe ReprocessingWindow
     , characterSheetWindow : Maybe CharacterSheetWindow
     , fleetWindow : Maybe FleetWindow
     , locationsWindow : Maybe LocationsWindow
@@ -384,6 +385,20 @@ type alias RepairShopWindow =
     , items : List UITreeNodeWithDisplayRegion
     , buttonGroup : Maybe UITreeNodeWithDisplayRegion
     , buttons : List { uiNode : UITreeNodeWithDisplayRegion, mainText : Maybe String }
+    }
+
+
+{-| The station's reprocessing service. Items go into the input by drag and drop -- the same
+gesture gap as between inventory containers, which is why the input container is parsed: it is
+a drop target for the move actions. The client draws its own captions ("Input materials",
+"Predicted Output Results"), and the predicted output pane shows what the input will yield
+before the Reprocess button commits it. Observed 2026-07-23, docked, window type
+`ReprocessingWnd` with `ReprocessInputContainer` / `ReprocessOutputContainer` children.
+-}
+type alias ReprocessingWindow =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , inputContainer : Maybe UITreeNodeWithDisplayRegion
+    , reprocessButton : Maybe UITreeNodeWithDisplayRegion
     }
 
 
@@ -770,6 +785,7 @@ parseUserInterfaceFromUITree uiTree =
     , surveyScanWindow = parseSurveyScanWindowFromUITreeRoot uiTree
     , bookmarkLocationWindow = parseBookmarkLocationWindowFromUITreeRoot uiTree
     , repairShopWindow = parseRepairShopWindowFromUITreeRoot uiTree
+    , reprocessingWindow = parseReprocessingWindowFromUITreeRoot uiTree
     , characterSheetWindow = parseCharacterSheetWindowFromUITreeRoot uiTree
     , fleetWindow = parseFleetWindowFromUITreeRoot uiTree
     , locationsWindow = parseLocationsWindowFromUITreeRoot uiTree
@@ -3486,6 +3502,29 @@ parseRepairShopWindowFromUITreeRoot uiTreeRoot =
         |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "RepairShopWindow")
         |> List.head
         |> Maybe.map parseRepairShopWindow
+
+
+parseReprocessingWindowFromUITreeRoot : UITreeNodeWithDisplayRegion -> Maybe ReprocessingWindow
+parseReprocessingWindowFromUITreeRoot uiTreeRoot =
+    uiTreeRoot
+        |> listDescendantsWithDisplayRegion
+        |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "ReprocessingWnd")
+        |> List.head
+        |> Maybe.map
+            (\windowNode ->
+                { uiNode = windowNode
+                , inputContainer =
+                    windowNode
+                        |> listDescendantsWithDisplayRegion
+                        |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "ReprocessInputContainer")
+                        |> List.head
+                , reprocessButton =
+                    windowNode
+                        |> listDescendantsWithDisplayRegion
+                        |> List.filter (.uiNode >> getNameFromDictEntries >> (==) (Just "reprocessButton"))
+                        |> List.head
+                }
+            )
 
 
 parseRepairShopWindow : UITreeNodeWithDisplayRegion -> RepairShopWindow
