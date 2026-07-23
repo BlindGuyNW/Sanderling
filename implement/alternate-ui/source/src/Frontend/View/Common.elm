@@ -13,6 +13,8 @@ module Frontend.View.Common exposing
     , nested
     , noNameTable
     , plainText
+    , isScrollingContainer
+    , pageControl
     , prose
     , section
     , sliderControl
@@ -29,6 +31,7 @@ when we cannot send input -- are decided here once, instead of in each view sepa
 
 -}
 
+import Dict
 import EveOnline.ParseUserInterface exposing (UITreeNodeWithDisplayRegion)
 import Frontend.InspectParsedUserInterface exposing (InputOnUINode(..), InputRoute)
 import Html
@@ -105,9 +108,13 @@ type alias Entry =
     }
 
 
+{-| `activate` is what pressing the entry sends -- a left-click for every ordinary control, or a
+page scroll for the "Show more entries" controls a scrolling list grows.
+-}
 type alias ControlTarget =
     { node : UITreeNodeWithDisplayRegion
     , canMenu : Bool
+    , activate : InputOnUINode
     }
 
 
@@ -115,28 +122,42 @@ type alias ControlTarget =
 -}
 control : String -> UITreeNodeWithDisplayRegion -> Entry
 control label node =
-    { label = label, target = Just { node = node, canMenu = True }, checkState = Nothing, sliderPercent = Nothing }
+    { label = label, target = Just { node = node, canMenu = True, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing }
 
 
 {-| A control the player can only activate, with no context menu behind it.
 -}
 controlActivateOnly : String -> UITreeNodeWithDisplayRegion -> Entry
 controlActivateOnly label node =
-    { label = label, target = Just { node = node, canMenu = False }, checkState = Nothing, sliderPercent = Nothing }
+    { label = label, target = Just { node = node, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing }
 
 
 {-| A control the client draws as checked or unchecked, such as a settings checkbox.
 -}
 toggleControl : String -> Bool -> UITreeNodeWithDisplayRegion -> Entry
 toggleControl label checked node =
-    { label = label, target = Just { node = node, canMenu = True }, checkState = Just checked, sliderPercent = Nothing }
+    { label = label, target = Just { node = node, canMenu = True, activate = MouseClickLeft }, checkState = Just checked, sliderPercent = Nothing }
 
 
 {-| A slider, with its current value as a percentage and the track node clicks are aimed at.
 -}
 sliderControl : String -> Int -> UITreeNodeWithDisplayRegion -> Entry
 sliderControl label percent trackNode =
-    { label = label, target = Just { node = trackNode, canMenu = False }, checkState = Nothing, sliderPercent = Just percent }
+    { label = label, target = Just { node = trackNode, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Just percent }
+
+
+{-| An entry that scrolls a list of the game client by the given number of pages, positive down.
+Grown by the generic view on a scrolling list whose content continues beyond what the client has
+built nodes for -- pressing it makes the client build the next rows, and the page picks them up
+with its next reading.
+-}
+pageControl : String -> Int -> UITreeNodeWithDisplayRegion -> Entry
+pageControl label pages scrollNode =
+    { label = label
+    , target = Just { node = scrollNode, canMenu = False, activate = VerticalScrollPage pages }
+    , checkState = Nothing
+    , sliderPercent = Nothing
+    }
 
 
 {-| Text that is only there to be read, with nothing to act on.
@@ -178,16 +199,23 @@ collapseEntriesSharingRegion entries =
     entries
         |> List.foldl
             (\entry ( kept, seenRegions ) ->
-                case entry.target |> Maybe.map (.node >> .totalDisplayRegion) of
+                case entry.target of
                     Nothing ->
                         ( entry :: kept, seenRegions )
 
-                    Just region ->
-                        if List.member region seenRegions then
+                    Just target ->
+                        --  Only click entries collapse: the nesting this collapse exists for is
+                        --  how the client wraps one clickable control in several nodes. The two
+                        --  "Show more entries" ends of one scrolling list share the scroll node's
+                        --  rectangle without being the same control.
+                        if target.activate /= MouseClickLeft then
+                            ( entry :: kept, seenRegions )
+
+                        else if List.member target.node.totalDisplayRegion seenRegions then
                             ( kept, seenRegions )
 
                         else
-                            ( entry :: kept, region :: seenRegions )
+                            ( entry :: kept, target.node.totalDisplayRegion :: seenRegions )
             )
             ( [], [] )
         |> Tuple.first
@@ -216,6 +244,11 @@ controlElement maybeInputRoute label node canMenu =
 
 controlElementWithState : Maybe (InputRoute event) -> String -> UITreeNodeWithDisplayRegion -> Bool -> Maybe Bool -> Html.Html event
 controlElementWithState maybeInputRoute label node canMenu checkState =
+    controlElementForInput maybeInputRoute label node canMenu checkState MouseClickLeft
+
+
+controlElementForInput : Maybe (InputRoute event) -> String -> UITreeNodeWithDisplayRegion -> Bool -> Maybe Bool -> InputOnUINode -> Html.Html event
+controlElementForInput maybeInputRoute label node canMenu checkState activateInput =
     case maybeInputRoute of
         Nothing ->
             --  With no button to carry `aria-pressed`, the state becomes a word after the
@@ -234,7 +267,7 @@ controlElementWithState maybeInputRoute label node canMenu checkState =
 
         Just inputRoute ->
             Html.button
-                (HE.onClick (inputRoute node MouseClickLeft)
+                (HE.onClick (inputRoute node activateInput)
                     :: (if canMenu then
                             [ HE.preventDefaultOn "contextmenu"
                                 (Json.Decode.succeed ( inputRoute node MouseClickRight, True ))
@@ -275,7 +308,7 @@ entryHtml context entry =
                         sliderElement context.inputRoute entry.label percent target.node
 
                     Nothing ->
-                        controlElementWithState context.inputRoute entry.label target.node target.canMenu entry.checkState
+                        controlElementForInput context.inputRoute entry.label target.node target.canMenu entry.checkState target.activate
         ]
 
 
@@ -423,6 +456,24 @@ see would be misleading, and offering a click on it would send input that lands 
 isVisible : UITreeNodeWithDisplayRegion -> Bool
 isVisible node =
     0 < node.totalDisplayRegionVisible.width && 0 < node.totalDisplayRegionVisible.height
+
+
+{-| A node that clips and scrolls its content, told by the client classes in its inheritance
+chain. The debt `CONVENTIONS.md` rule 4 describes: `ScrollContainer` was observed in the settings
+window and `Scroll` in the overview settings window, both 2026-07-23; `BasicDynamicScroll` is the
+base the ordinary list windows build from.
+-}
+isScrollingContainer : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> Bool
+isScrollingContainer typeHierarchy node =
+    let
+        typeName =
+            node.uiNode.pythonObjectTypeName
+
+        inheritanceChain =
+            Dict.get typeName typeHierarchy |> Maybe.withDefault [ typeName ]
+    in
+    [ "ScrollContainer", "Scroll", "BasicDynamicScroll" ]
+        |> List.any (\className -> List.member className inheritanceChain)
 
 
 {-| The order the player would read these in on screen: down the window first, then across.

@@ -357,7 +357,26 @@ walkContainer typeHierarchy node =
 
             nodeIsCandidate =
                 isControlCandidate typeHierarchy node
+
+            walkResultBeforeScrollControls =
+                walkContainerItems typeHierarchy node childItems descendantHasCandidate nodeIsCandidate
         in
+        if Common.isScrollingContainer typeHierarchy node then
+            case moreEntriesControls node of
+                ( [], [] ) ->
+                    walkResultBeforeScrollControls
+
+                ( aboveControls, belowControls ) ->
+                    { items = aboveControls ++ walkResultBeforeScrollControls.items ++ belowControls
+                    , hasCandidate = True
+                    }
+
+        else
+            walkResultBeforeScrollControls
+
+
+walkContainerItems : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> List ContentItem -> Bool -> Bool -> WalkResult
+walkContainerItems typeHierarchy node childItems descendantHasCandidate nodeIsCandidate =
         if nodeIsCandidate && not descendantHasCandidate then
             --  A candidate with no candidate inside it is the control itself; its whole subtree
             --  is its label, and we do not descend past it. A control with no text at all is
@@ -408,6 +427,60 @@ walkContainer typeHierarchy node =
 
                         _ ->
                             { items = mergeProseRuns childItems, hasCandidate = False }
+
+
+{-| The "Show more entries" controls a scrolling list grows at whichever of its ends the content
+continues past, as `(above, below)`.
+
+Two situations put content past the viewport, and these controls serve both. Content the client
+has built but scrolled out of place is reachable by an ordinary click, which scrolls it into view
+first. But a long list is *virtualized*: the client only builds nodes for the rows near the
+viewport, so the rows beyond it are not in the reading at all -- nothing to list, nothing to
+click. Observed in the overview settings window on 2026-07-23: a preset list 1524 px tall held
+nodes for only the 11 rows in its 269 px viewport. The only way to the rest is to make the client
+scroll, which makes it build the next rows; pressing one of these scrolls by a page, and the page
+picks the new rows up with its next reading.
+
+The content extent is measured over the built descendants, or from the client's own `__content`
+sizing node where there is one -- in the observed window that node carries the full 1524 px
+height even though most rows do not exist.
+
+-}
+moreEntriesControls : UITreeNodeWithDisplayRegion -> ( List ContentItem, List ContentItem )
+moreEntriesControls scrollNode =
+    let
+        region =
+            scrollNode.totalDisplayRegion
+
+        descendantRegions =
+            scrollNode
+                |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+                |> List.map .totalDisplayRegion
+
+        contentTop =
+            descendantRegions |> List.map .y |> List.minimum |> Maybe.withDefault region.y
+
+        contentBottom =
+            descendantRegions
+                |> List.map (\descendantRegion -> descendantRegion.y + descendantRegion.height)
+                |> List.maximum
+                |> Maybe.withDefault (region.y + region.height)
+
+        --  Less than a row's height past the edge is rounding, not more content.
+        threshold =
+            30
+    in
+    ( if contentTop < region.y - threshold then
+        [ Control (Common.pageControl "Show more entries above" -1 scrollNode) ]
+
+      else
+        []
+    , if region.y + region.height + threshold < contentBottom then
+        [ Control (Common.pageControl "Show more entries below" 1 scrollNode) ]
+
+      else
+        []
+    )
 
 
 {-| A candidate that holds other candidates, re-read as a card when text remains its own.

@@ -332,12 +332,18 @@ update event stateBefore =
                            view, and aimed at where the node will be afterwards.
                         -}
                         maybeScrollToReveal =
-                            stateBefore.readFromLiveProcess
-                                |> decideNextStepToReadFromLiveProcess { timeMilli = stateBefore.timeMilli }
-                                |> Tuple.second
-                                |> .lastMemoryReading
-                                |> Maybe.andThen (.memoryReading >> .parseResult >> Result.toMaybe)
-                                |> Maybe.andThen (scrollToRevealNode sendInput.uiNode)
+                            case sendInput.input of
+                                --  A page scroll targets the scroll container itself.
+                                VerticalScrollPage _ ->
+                                    Nothing
+
+                                _ ->
+                                    stateBefore.readFromLiveProcess
+                                        |> decideNextStepToReadFromLiveProcess { timeMilli = stateBefore.timeMilli }
+                                        |> Tuple.second
+                                        |> .lastMemoryReading
+                                        |> Maybe.andThen (.memoryReading >> .parseResult >> Result.toMaybe)
+                                        |> Maybe.andThen (scrollToRevealNode sendInput.uiNode)
 
                         targetRegion =
                             case maybeScrollToReveal of
@@ -373,6 +379,30 @@ update event stateBefore =
 
                         clickTask =
                             case sendInput.input of
+                                {- Scroll the container by whole pages: enough ticks to move
+                                   about four fifths of its height per page, so consecutive pages
+                                   overlap a little and no row is skipped over.
+                                -}
+                                VerticalScrollPage pages ->
+                                    let
+                                        ticksPerPage =
+                                            max 1 ((sendInput.uiNode.totalDisplayRegion.height * 4) // (5 * pixelsPerWheelTick))
+
+                                        deltaTicks =
+                                            -(pages * ticksPerPage)
+                                    in
+                                    (Common.EffectOnWindow.MouseMoveTo clickLocation
+                                        :: (deltaTicks
+                                                |> splitIntoWheelMessages
+                                                |> List.map
+                                                    (\ticks ->
+                                                        Common.EffectOnWindow.VerticalScrollAt
+                                                            { location = clickLocation, deltaTicks = ticks }
+                                                    )
+                                           )
+                                    )
+                                        |> sequenceElements effectSequenceSpacingMilliseconds
+
                                 MouseClickRight ->
                                     Common.EffectOnWindow.effectsMouseClickAtLocation
                                         Common.EffectOnWindow.MouseButtonRight
@@ -475,16 +505,6 @@ maximumWheelTicksPerMessage =
     25
 
 
-{-| The client classes that clip and scroll their content, matched anywhere in a type's
-inheritance chain. The debt `CONVENTIONS.md` rule 4 describes: `ScrollContainer` was observed in
-the settings window on 2026-07-23; `Scroll` and `BasicDynamicScroll` are the bases the ordinary
-list windows build their scroll areas from.
--}
-scrollContainerClassNames : List String
-scrollContainerClassNames =
-    [ "ScrollContainer", "Scroll", "BasicDynamicScroll" ]
-
-
 type alias ScrollToRevealStructure =
     { effects : List Common.EffectOnWindow.EffectOnWindowStructure
     , predictedRegion : EveOnline.ParseUserInterface.DisplayRegion
@@ -515,7 +535,7 @@ scrollToRevealNode nodeAsCarried parseSuccess =
     in
     ancestorsOfNode node.uiNode.pythonObjectAddress parseSuccess.parsedUserInterface.uiTree
         |> Maybe.withDefault []
-        |> List.filter (isScrollingContainer parseSuccess.typeHierarchy)
+        |> List.filter (Frontend.View.Common.isScrollingContainer parseSuccess.typeHierarchy)
         --  The nearest enclosing scroll container: ancestors arrive root-first.
         |> List.reverse
         |> List.head
@@ -613,19 +633,6 @@ splitIntoWheelMessages totalTicks =
                 clamp (negate maximumWheelTicksPerMessage) maximumWheelTicksPerMessage totalTicks
         in
         step :: splitIntoWheelMessages (totalTicks - step)
-
-
-isScrollingContainer : Dict.Dict String (List String) -> EveOnline.ParseUserInterface.UITreeNodeWithDisplayRegion -> Bool
-isScrollingContainer typeHierarchy node =
-    let
-        typeName =
-            node.uiNode.pythonObjectTypeName
-
-        inheritanceChain =
-            Dict.get typeName typeHierarchy |> Maybe.withDefault [ typeName ]
-    in
-    scrollContainerClassNames
-        |> List.any (\className -> List.member className inheritanceChain)
 
 
 {-| The nodes above the one with the given address, from the root down, excluding the node itself.

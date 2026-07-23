@@ -39,6 +39,11 @@ type InputOnUINode
          a slider is set: the game client jumps the handle to the clicked position on the track.
       -}
     | MouseClickAtHorizontalFraction Float
+      {- A wheel rotation over the node scrolling it by the given number of its own heights,
+         positive down. This is how a list that only builds nodes for the rows in view is walked:
+         scrolling makes the client build the next rows, and the following reading picks them up.
+      -}
+    | VerticalScrollPage Int
 
 
 type ParsedUITreeViewPathNode
@@ -99,6 +104,9 @@ displayTextForInputKind inputKind =
 
         MouseClickAtHorizontalFraction _ ->
             "setposition"
+
+        VerticalScrollPage _ ->
+            "scrollpage"
 
 
 renderTreeNodeFromParsedUserInterface :
