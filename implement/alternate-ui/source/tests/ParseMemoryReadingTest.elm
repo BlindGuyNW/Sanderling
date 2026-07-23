@@ -15,7 +15,35 @@ allTests =
         , parse_neocom_clock_text
         , parse_security_status_percent_from_ui_node_text
         , parse_current_solar_system_from_ui_node_text
+        , column_cell_texts_from_row_text
         ]
+
+
+column_cell_texts_from_row_text : Test.Test
+column_cell_texts_from_row_text =
+    [ -- 2026-07-23 regional market sell-order rows (Essence region, Tritanium), observed live.
+      -- Columns: Jumps, Quantity, Price, Location, Expires in.
+      ( "<right>8<t><right>5,838<t><right><color='0xFFFFFFFF'>3.00 ISK</color></right><t>Annages VII - Astral Mining Inc. Mining Outpost<t>88d 20h 11m 52s"
+      , [ "8", "5,838", "3.00 ISK", "Annages VII - Astral Mining Inc. Mining Outpost", "88d 20h 11m 52s" ]
+      )
+    , ( "<right>5<t><right>1,155,354<t><right><color='0xFFFFFFFF'>3.37 ISK</color></right><t>Villore VIII - Moon 7 - Federal Intelligence Office Logistic Support<t>89d 4h 27m 40s"
+      , [ "5", "1,155,354", "3.37 ISK", "Villore VIII - Moon 7 - Federal Intelligence Office Logistic Support", "89d 4h 27m 40s" ]
+      )
+
+    -- A text with no tab tag is one cell, whatever other markup it carries.
+    , ( "<right><color='0xFFFFFFFF'>3.00 ISK</color></right>"
+      , [ "3.00 ISK" ]
+      )
+    ]
+        |> List.map
+            (\( rowText, expectedCells ) ->
+                Test.test rowText <|
+                    \_ ->
+                        rowText
+                            |> EveOnline.ParseUserInterface.columnCellTextsFromRowText
+                            |> Expect.equal expectedCells
+            )
+        |> Test.describe "Column cell texts from row text"
 
 
 overview_entry_distance_text_to_meter : Test.Test

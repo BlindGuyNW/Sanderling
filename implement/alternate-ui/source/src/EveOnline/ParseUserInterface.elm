@@ -2752,6 +2752,24 @@ removeMarkupTags text =
             Regex.replace regex (always "") text
 
 
+{-| The cells of one table row, from a row node that packs its whole row into a single string:
+cells separated by the client's `<t>` tab tag, each cell possibly wrapped in alignment and color
+markup of its own. Stripping the markup without honoring `<t>` first is what mashed such rows
+into one unreadable run of digits.
+
+Observed 2026-07-23 in the regional market's order tables (Essence region, Tritanium), where one
+sell-order row reads:
+`<right>8<t><right>5,838<t><right><color='0xFFFFFFFF'>3.00 ISK</color></right><t>Annages VII - Astral Mining Inc. Mining Outpost<t>88d 20h 11m 52s`
+-- five cells matching the five column headers Jumps, Quantity, Price, Location, Expires in.
+
+-}
+columnCellTextsFromRowText : String -> List String
+columnCellTextsFromRowText rowText =
+    rowText
+        |> String.split "<t>"
+        |> List.map (removeMarkupTags >> String.trim)
+
+
 parseInventory : UITreeNodeWithDisplayRegion -> Inventory
 parseInventory inventoryNode =
     let

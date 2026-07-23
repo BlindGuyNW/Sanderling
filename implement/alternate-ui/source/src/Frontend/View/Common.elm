@@ -533,10 +533,16 @@ noNameTable _ =
 screen reader has to go further: the client also emits tags cut off at the end of a truncated
 string, and HTML entities that would otherwise be read out as "ampersand n b s p".
 
+`<t>` is not decoration but the client's tab: it is what separates the cells of a row packed
+into one string, so it becomes a separator instead of vanishing -- dropped with the other tags,
+`8`, `5,838` and `3.00 ISK` read as one number. Observed 2026-07-23 in the regional market's
+order rows.
+
 -}
 plainText : String -> String
 plainText text =
     text
+        |> replaceWithRegex "<t>" ", "
         |> EveOnline.ParseUserInterface.removeMarkupTags
         |> replaceWithRegex "<[^>]*$" ""
         |> replaceWithRegex "&nbsp;" " "

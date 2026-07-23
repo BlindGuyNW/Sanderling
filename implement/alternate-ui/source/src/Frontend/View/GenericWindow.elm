@@ -25,6 +25,7 @@ import Dict
 import EveOnline.ParseUserInterface exposing (GenericWindow, UITreeNodeWithDisplayRegion)
 import Frontend.View.Common as Common exposing (Context)
 import Html
+import Html.Attributes as HA
 
 
 {-| Windows such as the market can contain several hundred nodes carrying text. Presenting all of
@@ -58,11 +59,28 @@ alternate between a bulleted indented run and a flush-left unbulleted one. Prose
 position it was read from, because merging it back together has to put it in the order it appears
 on screen rather than the order its containers happened to be visited in.
 
+A `Table` is a scrolling list the client itself draws as a table -- column headers over rows.
+See `tableFromScrollNode` for what qualifies.
+
 -}
 type ContentItem
     = Group String
     | Prose ProseText
     | Control Common.Entry
+    | Table TableData
+
+
+type alias TableData =
+    { caption : Maybe String
+    , headers : List String
+    , rows : List TableRow
+    }
+
+
+type alias TableRow =
+    { node : UITreeNodeWithDisplayRegion
+    , cells : List String
+    }
 
 
 {-| A piece of text, and where on screen it came from.
@@ -262,30 +280,158 @@ splitIntoGroups items =
 {-| A run of items with no heading between them, as one list.
 
 One list, not one per kind: a screen reader announces the count once and then reads straight down
-it, and every item sits at the same indent whether or not it has buttons.
+it, and every item sits at the same indent whether or not it has buttons -- except a table, which
+is its own element between the lists, because being reachable by table navigation is the point of
+emitting it as one.
 
 -}
 runHtml : Context event -> List ContentItem -> List (Html.Html event)
 runHtml context items =
-    case items |> List.filterMap entryOfItem of
+    let
+        flush entries htmlSoFar =
+            case entries of
+                [] ->
+                    htmlSoFar
+
+                _ ->
+                    Common.actionList context (List.reverse entries) :: htmlSoFar
+
+        step item ( pendingEntries, htmlSoFar ) =
+            case item of
+                Table table ->
+                    ( [], tableHtml context table :: flush pendingEntries htmlSoFar )
+
+                Control entry ->
+                    ( entry :: pendingEntries, htmlSoFar )
+
+                Prose prose ->
+                    ( Common.prose prose.text :: pendingEntries, htmlSoFar )
+
+                Group _ ->
+                    ( pendingEntries, htmlSoFar )
+    in
+    items
+        |> List.foldl step ( [], [] )
+        |> (\( pendingEntries, htmlSoFar ) -> flush pendingEntries htmlSoFar)
+        |> List.reverse
+
+
+{-| The same accessible-table shape as the overview view: a `caption`, `th scope="col"` headers,
+and the first cell of each row a `th scope="row"` carrying the row's one control, so walking any
+column announces the cell against the row it belongs to, and the row can be acted on where it is
+identified. A row with more cells than there are headers keeps the extras -- joined into the last
+column rather than silently dropped.
+-}
+tableHtml : Context event -> TableData -> Html.Html event
+tableHtml context table =
+    let
+        headerCells =
+            table.headers
+                |> List.map (\header -> Html.th [ HA.scope "col" ] [ Html.text header ])
+
+        rowHtml row =
+            case fitCellsToColumns (List.length table.headers) row.cells of
+                [] ->
+                    Html.tr [] []
+
+                handleCell :: followingCells ->
+                    Html.tr []
+                        (Html.th [ HA.scope "row" ]
+                            [ Common.controlElement context.inputRoute handleCell row.node True ]
+                            :: (followingCells |> List.map (\cell -> Html.td [] [ Html.text cell ]))
+                        )
+
+        rowCountText =
+            case List.length table.rows of
+                1 ->
+                    "1 row"
+
+                count ->
+                    String.fromInt count ++ " rows"
+
+        caption =
+            case table.caption of
+                Just name ->
+                    name ++ ", " ++ rowCountText
+
+                Nothing ->
+                    rowCountText
+    in
+    Html.table
+        [ HA.style "border-collapse" "collapse" ]
+        [ Html.caption [] [ Html.text caption ]
+        , Html.thead [] [ Html.tr [] headerCells ]
+        , Html.tbody [] (table.rows |> List.map rowHtml)
+        ]
+
+
+{-| A short piece of text directly before a nameless table becomes the table's caption.
+
+The client draws each order table's name -- `Sellers`, `Buyers` -- as a label beside the list
+rather than inside it, so the caption a table announces would otherwise be only its row count. A
+screen reader's table navigation jumps from table to table and reads the caption; the label line
+outside the table is exactly what that jump skips over, which left two order tables back to back
+with nothing to tell apart. Observed 2026-07-23 on the regional market.
+
+Only a short text is adopted: a paragraph before a table is prose in its own right, not a name.
+The label may arrive as prose, or as a control -- the walk collapses a container holding nothing
+but text into one, and the client draws these labels in exactly such a container. Adopted prose
+moves into the caption; an adopted control stays, because this cannot tell a collapsed label from
+a genuine button, and deleting a genuine button costs the player an action.
+
+-}
+adoptTableCaptions : List ContentItem -> List ContentItem
+adoptTableCaptions items =
+    case items of
+        first :: (Table table) :: rest ->
+            case ( table.caption, captionOfferedByItem first ) of
+                ( Nothing, Just ( name, keepItem ) ) ->
+                    (keepItem |> Maybe.map List.singleton |> Maybe.withDefault [])
+                        ++ Table { table | caption = Just name }
+                        :: adoptTableCaptions rest
+
+                _ ->
+                    first :: adoptTableCaptions (Table table :: rest)
+
+        first :: rest ->
+            first :: adoptTableCaptions rest
+
         [] ->
             []
 
-        entries ->
-            [ Common.actionList context entries ]
 
-
-entryOfItem : ContentItem -> Maybe Common.Entry
-entryOfItem item =
+{-| The caption an item directly before a nameless table can give it, and whether the item itself
+stays on the page after being adopted.
+-}
+captionOfferedByItem : ContentItem -> Maybe ( String, Maybe ContentItem )
+captionOfferedByItem item =
     case item of
-        Control entry ->
-            Just entry
-
         Prose prose ->
-            Just (Common.prose prose.text)
+            if String.length prose.text <= 60 then
+                Just ( prose.text, Nothing )
 
-        Group _ ->
+            else
+                Nothing
+
+        Control entry ->
+            if String.length entry.label <= 60 then
+                Just ( entry.label, Just item )
+
+            else
+                Nothing
+
+        _ ->
             Nothing
+
+
+fitCellsToColumns : Int -> List String -> List String
+fitCellsToColumns columnCount cells =
+    if List.length cells <= columnCount then
+        cells ++ List.repeat (columnCount - List.length cells) ""
+
+    else
+        List.take (columnCount - 1) cells
+            ++ [ cells |> List.drop (columnCount - 1) |> String.join ", " ]
 
 
 {-| The window's content, one item list per content part.
@@ -372,12 +518,21 @@ walkContainer typeHierarchy node =
                 walkContainerItems typeHierarchy node childItems descendantHasCandidate nodeIsCandidate
         in
         if Common.isScrollingContainer typeHierarchy node then
+            let
+                scrollContentResult =
+                    case tableFromScrollNode node of
+                        Just table ->
+                            { items = [ table ], hasCandidate = True }
+
+                        Nothing ->
+                            walkResultBeforeScrollControls
+            in
             case moreEntriesControls node of
                 ( [], [] ) ->
-                    walkResultBeforeScrollControls
+                    scrollContentResult
 
                 ( aboveControls, belowControls ) ->
-                    { items = aboveControls ++ walkResultBeforeScrollControls.items ++ belowControls
+                    { items = aboveControls ++ scrollContentResult.items ++ belowControls
                     , hasCandidate = True
                     }
 
@@ -417,11 +572,11 @@ walkContainerItems typeHierarchy node childItems descendantHasCandidate nodeIsCa
                     { items = items, hasCandidate = True }
 
                 Nothing ->
-                    { items = mergeProseRuns childItems, hasCandidate = True }
+                    { items = mergeProseRuns childItems |> adoptTableCaptions, hasCandidate = True }
 
         else if descendantHasCandidate then
             --  A plain container with controls somewhere below: keep what the children found.
-            { items = mergeProseRuns childItems, hasCandidate = True }
+            { items = mergeProseRuns childItems |> adoptTableCaptions, hasCandidate = True }
 
         else
             case collapsedControlForNode node childItems of
@@ -491,6 +646,87 @@ moreEntriesControls scrollNode =
       else
         []
     )
+
+
+{-| A scrolling list re-read as the table the client draws it as, or `Nothing` where it is not
+one. Two signals, both from structure the client maintains for its own sake: a header row of
+`ColumnHeader` nodes over the list, and rows that pack their cells into one string separated by
+the client's `<t>` tab tag. Only lists showing both become tables here -- lists whose rows are
+built as separate nodes per cell, such as the industry window's blueprint browser, already read
+tolerably as cards, and re-reading them as tables is a separate decision from repairing rows
+that are unreadable without the split.
+
+Being drawn as a table is not the same as being marked up as one: the same lesson as the
+overview view. Headers and rows paired by position are what let a screen reader walk down the
+Price column and across to Location -- exactly the question a table of orders exists to answer.
+
+Observed 2026-07-23 in the regional market's Sellers and Buyers tables, five and seven columns.
+
+The row's whole node is the thing the player acts on, as in the client, so the first cell
+carries the row's control: a right-click there is how an order's menu opens.
+
+-}
+tableFromScrollNode : UITreeNodeWithDisplayRegion -> Maybe ContentItem
+tableFromScrollNode scrollNode =
+    let
+        headers =
+            scrollNode
+                |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+                |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "ColumnHeader")
+                |> List.filter Common.isVisible
+                |> List.sortBy (.totalDisplayRegion >> .x)
+                |> List.map (\headerNode -> textOfSubtree headerNode |> Maybe.withDefault "")
+
+        rowNodes =
+            scrollNode
+                |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+                |> List.filter
+                    (.uiNode
+                        >> EveOnline.ParseUserInterface.getNameFromDictEntries
+                        >> (==) (Just "__content")
+                    )
+                |> List.head
+                |> Maybe.map EveOnline.ParseUserInterface.listChildrenWithDisplayRegion
+                |> Maybe.withDefault []
+                |> List.filter Common.isVisible
+                |> Common.nodesInReadingOrder
+
+        rawRowTexts rowNode =
+            rowNode
+                |> EveOnline.ParseUserInterface.getAllContainedDisplayTextsWithRegion
+                |> List.sortBy (Tuple.second >> .totalDisplayRegion >> (\region -> ( region.y, region.x )))
+                |> List.map Tuple.first
+
+        rows =
+            rowNodes
+                |> List.map
+                    (\rowNode ->
+                        { node = rowNode
+                        , cells =
+                            rawRowTexts rowNode
+                                |> List.concatMap EveOnline.ParseUserInterface.columnCellTextsFromRowText
+                                |> List.map
+                                    --  A cell the reading could not recover is blank, not the
+                                    --  literal failure message; blank keeps the columns aligned.
+                                    (\cellText ->
+                                        cellText
+                                            |> EveOnline.ParseUserInterface.discardUnreadableText
+                                            |> Maybe.map Common.plainText
+                                            |> Maybe.withDefault ""
+                                    )
+                        }
+                    )
+                |> List.filter (.cells >> List.any (String.isEmpty >> not))
+
+        anyRowIsPacked =
+            rowNodes
+                |> List.any (rawRowTexts >> List.any (String.contains "<t>"))
+    in
+    if List.length headers < 2 || List.isEmpty rows || not anyRowIsPacked then
+        Nothing
+
+    else
+        Just (Table { caption = Nothing, headers = headers, rows = rows })
 
 
 {-| A candidate that holds other candidates, re-read as a card when text remains its own.
