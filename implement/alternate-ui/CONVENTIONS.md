@@ -49,9 +49,12 @@ not remove a window from the generic path except by adding it to the exclusion i
 ## 2. Every window renders, whether or not we have a view for it
 
 Windows in `l_main` are uniform: a `content` child holding `headerParent` and `main`, a
-`window_controls_cont`, and a `Resizer`. `ParseUserInterface.parseGenericWindow` reads that shape,
-and `Frontend.View.GenericWindow` presents it -- caption as the heading, header buttons with their
-tooltips as labels, and the text the window contains as entries that can be clicked.
+`window_controls_cont`, and a `Resizer`. The settings window in `l_modal` bends that shape without
+leaving it -- its `content` sits one wrapper deeper, its caption is a `TextHeadline`, and its
+content splits into a header container and the rest instead of a `main`.
+`ParseUserInterface.parseGenericWindow` reads both variants, and `Frontend.View.GenericWindow`
+presents them -- caption as the heading, header buttons with their tooltips as labels, and the
+text the window contains as entries that can be clicked.
 
 So a window we have never written a specialized view for is still readable and clickable the day
 the client shows it. Writing a specialized view is an improvement on a working page, not the price

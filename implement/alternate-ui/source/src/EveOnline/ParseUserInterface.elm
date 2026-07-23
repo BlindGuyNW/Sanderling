@@ -678,9 +678,15 @@ type alias UILayer =
 {-| A window as the game client builds it, without knowing what kind of window it is.
 
 Every window in `l_main` observed so far has the same shape: a `content` child holding
-`headerParent` and `main`, plus `window_controls_cont` and a `Resizer`. Reading that shape gives
-us the caption the player sees and the header buttons for any window, including the ones we have
-no specialized parse function for.
+`headerParent` and `main`, plus `window_controls_cont` and a `Resizer`. The settings window in
+`l_modal` bends that shape without leaving it: its `content` sits one wrapper deeper
+(`l_systemmenu > layerCont > content`), its caption is a `TextHeadline` rather than a
+`WindowCaption`, and instead of a `main` child its content splits into a header container and
+the rest. Reading both variants of the shape gives us the caption the player sees and the header
+buttons for any window, including the ones we have no specialized parse function for.
+
+`contentNodes` is the parts of the window that are content rather than chrome -- a single `main`
+node in the common case, or every content child outside the header container.
 
 -}
 type alias GenericWindow =
@@ -689,7 +695,7 @@ type alias GenericWindow =
     , name : Maybe String
     , caption : Maybe String
     , headerButtons : List LabeledUINode
-    , contentNode : Maybe UITreeNodeWithDisplayRegion
+    , contentNodes : List UITreeNodeWithDisplayRegion
     }
 
 
@@ -815,8 +821,21 @@ parseGenericWindow windowNode =
                 |> listChildrenWithDisplayRegion
                 |> List.filter (.uiNode >> getNameFromDictEntries >> (==) (Just name))
                 |> List.head
+
+        --  The settings window wraps its content one level deeper than the l_main windows:
+        --  `l_systemmenu > layerCont > content`. Observed 2026-07-23.
+        maybeContentNode =
+            case windowNode |> childNamed "content" of
+                Just contentDirect ->
+                    Just contentDirect
+
+                Nothing ->
+                    windowNode
+                        |> listChildrenWithDisplayRegion
+                        |> List.filterMap (childNamed "content")
+                        |> List.head
     in
-    case windowNode |> childNamed "content" of
+    case maybeContentNode of
         Nothing ->
             Nothing
 
@@ -825,7 +844,7 @@ parseGenericWindow windowNode =
                 headerParentNode =
                     contentNode |> childNamed "headerParent"
 
-                caption =
+                captionFromWindowCaption =
                     headerParentNode
                         |> Maybe.map listDescendantsWithDisplayRegion
                         |> Maybe.withDefault []
@@ -835,8 +854,62 @@ parseGenericWindow windowNode =
                         |> List.filterMap discardUnreadableText
                         |> List.head
 
+                --  The settings window titles itself with a `TextHeadline` in its top container
+                --  instead of a `WindowCaption` in a `headerParent`. Only consulted when the
+                --  ordinary caption is absent, so a headline in a window's body cannot displace
+                --  a real caption.
+                headlineNode =
+                    case captionFromWindowCaption of
+                        Just _ ->
+                            Nothing
+
+                        Nothing ->
+                            contentNode
+                                |> listDescendantsWithDisplayRegion
+                                |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "TextHeadline")
+                                |> List.head
+
+                caption =
+                    case captionFromWindowCaption of
+                        Just fromWindowCaption ->
+                            Just fromWindowCaption
+
+                        Nothing ->
+                            headlineNode
+                                |> Maybe.map getAllContainedDisplayTextsWithRegion
+                                |> Maybe.withDefault []
+                                |> List.map Tuple.first
+                                |> List.filterMap discardUnreadableText
+                                |> List.head
+
+                --  The container of the window's chrome: `headerParent` where there is one,
+                --  otherwise the content child holding the caption headline. What is not the
+                --  header container is content.
+                headerContainerNode =
+                    case headerParentNode of
+                        Just headerParent ->
+                            Just headerParent
+
+                        Nothing ->
+                            headlineNode
+                                |> Maybe.andThen
+                                    (\headline ->
+                                        contentNode
+                                            |> listChildrenWithDisplayRegion
+                                            |> List.filter
+                                                (\child ->
+                                                    (child :: listDescendantsWithDisplayRegion child)
+                                                        |> List.any
+                                                            (\descendant ->
+                                                                descendant.uiNode.pythonObjectAddress
+                                                                    == headline.uiNode.pythonObjectAddress
+                                                            )
+                                                )
+                                            |> List.head
+                                    )
+
                 headerButtons =
-                    [ windowNode |> childNamed "window_controls_cont", headerParentNode ]
+                    [ windowNode |> childNamed "window_controls_cont", headerContainerNode ]
                         |> List.filterMap identity
                         |> List.concatMap listDescendantsWithDisplayRegion
                         |> List.filterMap
@@ -848,6 +921,20 @@ parseGenericWindow windowNode =
                                     Just hint ->
                                         Just { uiNode = descendant, label = Just hint }
                             )
+
+                contentNodes =
+                    case contentNode |> childNamed "main" of
+                        Just mainNode ->
+                            [ mainNode ]
+
+                        Nothing ->
+                            contentNode
+                                |> listChildrenWithDisplayRegion
+                                |> List.filter
+                                    (\child ->
+                                        Just child.uiNode.pythonObjectAddress
+                                            /= (headerContainerNode |> Maybe.map (.uiNode >> .pythonObjectAddress))
+                                    )
             in
             Just
                 { uiNode = windowNode
@@ -855,7 +942,7 @@ parseGenericWindow windowNode =
                 , name = windowNode.uiNode |> getNameFromDictEntries
                 , caption = caption
                 , headerButtons = headerButtons
-                , contentNode = contentNode |> childNamed "main"
+                , contentNodes = contentNodes
                 }
 
 

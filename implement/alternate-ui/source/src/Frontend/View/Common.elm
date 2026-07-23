@@ -16,6 +16,7 @@ module Frontend.View.Common exposing
     , prose
     , section
     , textLines
+    , toggleControl
     )
 
 {-| The building blocks every view of the game client is made of.
@@ -87,10 +88,15 @@ sends a right-click -- so there is one stop to land on, not a separate "Activate
 button. `canMenu` is whether the right-click is offered at all: a few controls, such as a window's
 close button, have nothing behind a right-click.
 
+`checkState` is the on/off state the client draws on a checkable control, carried the same way
+the context-menu entries carry theirs: as `aria-pressed` on the button, so a screen reader
+announces `toggle button, pressed` -- or, without an input route, as a word after the label.
+
 -}
 type alias Entry =
     { label : String
     , target : Maybe ControlTarget
+    , checkState : Maybe Bool
     }
 
 
@@ -104,21 +110,28 @@ type alias ControlTarget =
 -}
 control : String -> UITreeNodeWithDisplayRegion -> Entry
 control label node =
-    { label = label, target = Just { node = node, canMenu = True } }
+    { label = label, target = Just { node = node, canMenu = True }, checkState = Nothing }
 
 
 {-| A control the player can only activate, with no context menu behind it.
 -}
 controlActivateOnly : String -> UITreeNodeWithDisplayRegion -> Entry
 controlActivateOnly label node =
-    { label = label, target = Just { node = node, canMenu = False } }
+    { label = label, target = Just { node = node, canMenu = False }, checkState = Nothing }
+
+
+{-| A control the client draws as checked or unchecked, such as a settings checkbox.
+-}
+toggleControl : String -> Bool -> UITreeNodeWithDisplayRegion -> Entry
+toggleControl label checked node =
+    { label = label, target = Just { node = node, canMenu = True }, checkState = Just checked }
 
 
 {-| Text that is only there to be read, with nothing to act on.
 -}
 prose : String -> Entry
 prose label =
-    { label = label, target = Nothing }
+    { label = label, target = Nothing, checkState = Nothing }
 
 
 {-| A list of things in the game client, each with the actions we can perform on it.
@@ -186,9 +199,26 @@ labels and wires them exactly the way the list views do.
 -}
 controlElement : Maybe (InputRoute event) -> String -> UITreeNodeWithDisplayRegion -> Bool -> Html.Html event
 controlElement maybeInputRoute label node canMenu =
+    controlElementWithState maybeInputRoute label node canMenu Nothing
+
+
+controlElementWithState : Maybe (InputRoute event) -> String -> UITreeNodeWithDisplayRegion -> Bool -> Maybe Bool -> Html.Html event
+controlElementWithState maybeInputRoute label node canMenu checkState =
     case maybeInputRoute of
         Nothing ->
-            Html.text label
+            --  With no button to carry `aria-pressed`, the state becomes a word after the
+            --  label, so a reading loaded from a file still tells which options were on.
+            Html.text
+                (case checkState of
+                    Nothing ->
+                        label
+
+                    Just True ->
+                        label ++ " (on)"
+
+                    Just False ->
+                        label ++ " (off)"
+                )
 
         Just inputRoute ->
             Html.button
@@ -200,6 +230,20 @@ controlElement maybeInputRoute label node canMenu =
 
                         else
                             []
+                       )
+                    ++ (case checkState of
+                            Nothing ->
+                                []
+
+                            Just checked ->
+                                [ HA.attribute "aria-pressed"
+                                    (if checked then
+                                        "true"
+
+                                     else
+                                        "false"
+                                    )
+                                ]
                        )
                 )
                 [ Html.text label ]
@@ -214,7 +258,7 @@ entryHtml context entry =
                 Html.text entry.label
 
             Just target ->
-                controlElement context.inputRoute entry.label target.node target.canMenu
+                controlElementWithState context.inputRoute entry.label target.node target.canMenu entry.checkState
         ]
 
 

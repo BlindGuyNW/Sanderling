@@ -165,14 +165,15 @@ bodyHtml typeHierarchy window context =
                             button.uiNode
                     )
 
-        allItems =
-            contentItems typeHierarchy window
+        allItemLists =
+            contentItemLists typeHierarchy window
 
-        shownItems =
-            allItems |> List.take maximumNumberOfContentEntries
+        shownItemLists =
+            allItemLists |> takeAcrossLists maximumNumberOfContentEntries
 
         numberNotShown =
-            List.length allItems - List.length shownItems
+            (allItemLists |> List.map List.length |> List.sum)
+                - (shownItemLists |> List.map List.length |> List.sum)
 
         notShownHtml =
             if numberNotShown < 1 then
@@ -189,12 +190,27 @@ bodyHtml typeHierarchy window context =
      else
         [ Common.section context "Window controls" (\_ -> [ Common.actionList context headerButtonEntries ]) ]
     )
-        ++ (if shownItems == [] then
+        ++ (if List.all List.isEmpty shownItemLists then
                 [ Common.textLines [ "Nothing readable in this window." ] ]
 
             else
-                groupedHtml context shownItems ++ notShownHtml
+                (shownItemLists |> List.concatMap (groupedHtml context)) ++ notShownHtml
            )
+
+
+{-| The cap on shown entries, applied across the content parts in order, so the count the cutoff
+message reports stays one number for the whole window.
+-}
+takeAcrossLists : Int -> List (List a) -> List (List a)
+takeAcrossLists limit lists =
+    lists
+        |> List.foldl
+            (\list ( kept, remaining ) ->
+                ( List.take remaining list :: kept, max 0 (remaining - List.length list) )
+            )
+            ( [], limit )
+        |> Tuple.first
+        |> List.reverse
 
 
 {-| Lays the items out, opening a section wherever the client drew a heading.
@@ -272,14 +288,18 @@ entryOfItem item =
             Nothing
 
 
-contentItems : Dict.Dict String (List String) -> GenericWindow -> List ContentItem
-contentItems typeHierarchy window =
-    case window.contentNode of
-        Nothing ->
-            []
+{-| The window's content, one item list per content part.
 
-        Just contentNode ->
-            (walk typeHierarchy contentNode).items
+The parts stay separate through grouping: a window without a `main` node -- the settings window --
+has its content split into a center panel and a bottom button bar, and running them together would
+file `Return to Game` under whatever section heading the panel happened to end with.
+
+-}
+contentItemLists : Dict.Dict String (List String) -> GenericWindow -> List (List ContentItem)
+contentItemLists typeHierarchy window =
+    window.contentNodes
+        |> Common.nodesInReadingOrder
+        |> List.map (walk typeHierarchy >> .items)
 
 
 {-| What a walk of one node found, and whether any of its subtree was a control candidate.
@@ -333,15 +353,20 @@ walk typeHierarchy node =
             --  is its label, and we do not descend past it. A control with no text at all is
             --  still a control -- the station service buttons are icon-only -- so it falls back
             --  to the client's tooltip or its internal name rather than being dropped.
-            { items =
-                [ Control
-                    (Common.control
-                        (textOfSubtree node
-                            |> Maybe.withDefault (Common.labelForControl handWrittenNames node)
-                        )
-                        node
-                    )
-                ]
+            let
+                label =
+                    textOfSubtree node
+                        |> Maybe.withDefault (Common.labelForControl handWrittenNames node)
+
+                entry =
+                    case checkboxState typeHierarchy node of
+                        Just checked ->
+                            Common.toggleControl label checked node
+
+                        Nothing ->
+                            Common.control label node
+            in
+            { items = [ Control entry ]
             , hasCandidate = True
             }
 
@@ -577,6 +602,11 @@ these also matches "ends in Entry".
 Observed in the Agency window on 2026-07-22: `SideNavigationHeaderEntry` carrying `Features`,
 `Career Paths` and `Other Tags`, each standing over the entries that follow it.
 
+Observed in the settings window on 2026-07-23: `SystemMenuHeader`, a container wrapping the
+`TextHeader` the client draws over each settings section -- Display, Effects, Graphic Content
+Settings. Matched by its exact type: `TextHeader` alone cannot be the signal, because the same
+type is also the label inside the clickable `TreeViewEntryHeader` category rows.
+
 -}
 isGroupHeading : UITreeNodeWithDisplayRegion -> Bool
 isGroupHeading node =
@@ -585,6 +615,7 @@ isGroupHeading node =
             node.uiNode.pythonObjectTypeName
     in
     String.contains "HeaderEntry" typeName
+        || (typeName == "SystemMenuHeader")
 
 
 {-| Something the player acts on, whose insides are its label rather than things of their own.
@@ -655,6 +686,9 @@ familyRootsOfControls =
     , "FittingSlotBase" -- the module slots in the fitting window
     , "BaseToggleButtonGroupButton" -- toggle buttons, e.g. the fitting hull/module/charge switch
     , "BaseSingleLineEdit" -- single-line text fields, e.g. a search box
+    , "Combo" -- dropdown selectors: SystemMenuCombo in the settings window; opens its options as a menu
+    , "Checkbox" -- labelled checkboxes, e.g. the settings window's effects toggles
+    , "TreeViewEntry" -- tree navigation rows; TreeViewEntryHeader, the settings category list, derives from it
     ]
 
 
@@ -665,6 +699,41 @@ substring test on "Button" wrongly claims it, which demotes the real button that
 controlTypeNames : List String
 controlTypeNames =
     [ "GroupAllButton", "SidePanelButton", "ExpandButton", "SafetyButton", "ModuleButton" ]
+
+
+{-| The on/off state the client draws on a `Checkbox`, or `Nothing` for anything that is not one.
+
+Checked is the presence of a sprite named `self_ok` in the checkbox's subtree; unchecked, the
+client removes the sprite entirely rather than hiding it. The same marking as
+`MenuEntryViewCheckbox` uses in context menus. Absence only means unchecked on a node of the
+Checkbox family, so everything else gets no state at all.
+
+Observed in the settings window on 2026-07-23: the ten enabled effects checkboxes each carried
+the sprite, the two disabled character-display ones did not, matching the client's own display.
+
+-}
+checkboxState : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> Maybe Bool
+checkboxState typeHierarchy node =
+    let
+        typeName =
+            node.uiNode.pythonObjectTypeName
+
+        inheritanceChain =
+            Dict.get typeName typeHierarchy |> Maybe.withDefault [ typeName ]
+    in
+    if List.member "Checkbox" inheritanceChain then
+        Just
+            (node
+                |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+                |> List.any
+                    (.uiNode
+                        >> EveOnline.ParseUserInterface.getNameFromDictEntries
+                        >> (==) (Just "self_ok")
+                    )
+            )
+
+    else
+        Nothing
 
 
 {-| A `Link` object, or text carrying the client's own link markup. The markup is checked before it
