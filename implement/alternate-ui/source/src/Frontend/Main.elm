@@ -1449,14 +1449,10 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                                         , verticalSpacerFromHeightInEm 0.5
                                         ]
                                )
-                            ++ (memoryReading.parsedUserInterface.inventoryWindows
-                                    |> List.concatMap
-                                        (\inventoryWindow ->
-                                            [ displayReadInventoryWindow maybeInputRoute inventoryWindow
-                                            , verticalSpacerFromHeightInEm 0.5
-                                            ]
-                                        )
-                               )
+                            --  The inventory renders through the generic shell: its specialized
+                            --  view was retired 2026-07-23 for repeatedly dropping parts of the
+                            --  window -- first the container tree, then the filters -- the same
+                            --  reason the station view went. Curation may reorder, never drop.
                             ++ displayOverviewWindows maybeInputRoute memoryReading.parsedUserInterface.overviewWindows
                             ++ [ [ ((memoryReading.parsedUserInterface.contextMenus |> List.length |> String.fromInt) ++ " Context menus") |> Html.text ] |> Html.h3 []
                                , displayParsedContextMenus maybeInputRoute memoryReading.parsedUserInterface.contextMenus
@@ -1654,8 +1650,7 @@ displayOtherWindows maybeInputRouteConfig typeHierarchy parsedUserInterface =
             viewContextFromInputRouteConfig maybeInputRouteConfig 3
 
         addressesShownSeparately =
-            [ parsedUserInterface.inventoryWindows |> List.map .uiNode
-            , parsedUserInterface.overviewWindows |> List.map .uiNode
+            [ parsedUserInterface.overviewWindows |> List.map .uiNode
             ]
                 |> List.concat
                 |> List.map (.uiNode >> .pythonObjectAddress)
@@ -1687,153 +1682,6 @@ displayOtherWindows maybeInputRouteConfig typeHierarchy parsedUserInterface =
                 windows |> List.map (Frontend.View.GenericWindow.view typeHierarchy contextForContent)
             )
         ]
-
-
-displayReadInventoryWindow : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.InventoryWindow -> Html.Html Event
-displayReadInventoryWindow maybeInputRouteConfig inventoryWindow =
-    let
-        maybeInputRoute =
-            maybeInputRouteConfig |> Maybe.map inputRouteFromInputConfig
-
-        capacityText =
-            case inventoryWindow.selectedContainerCapacityGauge of
-                Nothing ->
-                    "Capacity unknown"
-
-                Just (Err error) ->
-                    "Capacity unreadable: " ++ error
-
-                Just (Ok gauge) ->
-                    let
-                        maximumText =
-                            case gauge.maximum of
-                                Nothing ->
-                                    ""
-
-                                Just maximum ->
-                                    " of " ++ String.fromInt maximum
-                    in
-                    "Capacity used: " ++ String.fromInt gauge.used ++ maximumText ++ " m3"
-
-        itemRowHtml item =
-            let
-                labelText =
-                    case ( item.name, item.quantity ) of
-                        ( Just name, Just quantity ) ->
-                            if 1 < quantity then
-                                name ++ " (" ++ String.fromInt quantity ++ ")"
-
-                            else
-                                name
-
-                        ( Just name, Nothing ) ->
-                            name
-
-                        ( Nothing, _ ) ->
-                            "Unnamed item"
-
-            in
-            [ Frontend.View.Common.controlElement maybeInputRoute labelText item.uiNode True ]
-                |> Html.li [ HA.style "margin" "0.2em 0" ]
-
-        itemsHtml =
-            if inventoryWindow.items == [] then
-                [ [ "No items read from this container." |> Html.text ] |> Html.p [] ]
-
-            else
-                [ inventoryWindow.items
-                    |> List.map itemRowHtml
-                    |> Html.ul [ HA.style "list-style" "none", HA.style "padding-inline-start" "0" ]
-                ]
-
-        context =
-            viewContextFromInputRouteConfig maybeInputRouteConfig 3
-
-        {- The container tree on the window's left: the ship, the hangars, whatever else the
-           location offers. This is how the player moves between containers -- delivered goods
-           land in the item hangar while the window still shows the ship's cargo -- and the view
-           used to throw the tree away, leaving the items visible but the way to any other
-           container gone. A click selects the container; a right-click offers its menu.
-
-           The client marks the selected entry by drawing a `SelectionIndicatorLine` inside the
-           entry's own header row, which is color and geometry, so here it becomes a word. The
-           check runs against `selectRegion` -- the entry's header row -- rather than the whole
-           entry, because a child entry's marker is also a descendant of its parent. Observed
-           2026-07-23, docked, with the active ship selected.
-        -}
-        treeEntryIsSelected entry =
-            (entry.selectRegion |> Maybe.withDefault entry.uiNode)
-                |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
-                |> List.any
-                    (\descendant ->
-                        (descendant.uiNode.pythonObjectTypeName == "SelectionIndicatorLine")
-                            && Frontend.View.Common.isVisible descendant
-                    )
-
-        flattenTreeEntries entries =
-            entries
-                |> List.concatMap
-                    (\entry ->
-                        entry
-                            :: flattenTreeEntries
-                                (entry.children
-                                    |> List.map
-                                        (\(EveOnline.ParseUserInterface.InventoryWindowLeftTreeEntryChild child) ->
-                                            child
-                                        )
-                                )
-                    )
-
-        containerEntries =
-            inventoryWindow.leftTreeEntries
-                |> flattenTreeEntries
-                |> List.filter (.uiNode >> Frontend.View.Common.isVisible)
-                |> List.map
-                    (\entry ->
-                        Frontend.View.Common.control
-                            (Frontend.View.Common.plainText entry.text
-                                ++ (if treeEntryIsSelected entry then
-                                        " (selected)"
-
-                                    else
-                                        ""
-                                   )
-                            )
-                            (entry.selectRegion |> Maybe.withDefault entry.uiNode)
-                    )
-
-        containersHtml =
-            if containerEntries == [] then
-                []
-
-            else
-                [ Frontend.View.Common.actionList context containerEntries ]
-
-        windowButtonEntries =
-            [ inventoryWindow.buttonToStackAll, inventoryWindow.buttonToSwitchToListView ]
-                |> List.filterMap identity
-                |> List.filter Frontend.View.Common.isVisible
-                |> List.map
-                    (\button ->
-                        Frontend.View.Common.controlActivateOnly
-                            (Frontend.View.Common.labelForControl Frontend.View.Common.noNameTable button)
-                            button
-                    )
-
-        windowButtonsHtml =
-            if windowButtonEntries == [] then
-                []
-
-            else
-                [ Frontend.View.Common.actionList context windowButtonEntries ]
-    in
-    ([ [ "Inventory" |> Html.text ] |> Html.h3 [] ]
-        ++ containersHtml
-        ++ [ [ capacityText |> Html.text ] |> Html.p [] ]
-        ++ itemsHtml
-        ++ windowButtonsHtml
-    )
-        |> Html.div []
 
 
 displayNeocom : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.Neocom -> Html.Html Event

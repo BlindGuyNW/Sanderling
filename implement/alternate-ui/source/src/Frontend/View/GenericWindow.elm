@@ -561,8 +561,10 @@ walkContainerItems typeHierarchy node childItems descendantHasCandidate nodeIsCa
             --  to the client's tooltip or its internal name rather than being dropped.
             let
                 label =
-                    textOfSubtree node
+                    (textOfSubtree node
                         |> Maybe.withDefault (Common.labelForControl handWrittenNames node)
+                    )
+                        ++ selectionSuffix node
 
                 entry =
                     case checkboxState typeHierarchy node of
@@ -794,7 +796,7 @@ cardItems node childItems =
         Nothing
 
     else
-        Just (Control (Common.control label node) :: innerControlsAndGroups)
+        Just (Control (Common.control (label ++ selectionSuffix node) node) :: innerControlsAndGroups)
 
 
 {-| A container holding nothing but text is itself one thing the player can act on.
@@ -1229,6 +1231,31 @@ checkboxState typeHierarchy node =
 
     else
         Nothing
+
+
+{-| The word for the client's selection highlight, appended to a control's label. The client
+marks the selected entry of a list -- an inventory container, the active member of many stacks --
+by drawing a `SelectionIndicatorLine` inside the entry's own subtree, which is geometry and
+color, so a screen reader hears nothing of it. Only a line *inside* the control marks it: a tab
+strip draws its one line beside the tabs in the group container, so tabs are not told apart this
+way. Observed 2026-07-23 on the inventory's container tree, where the entry's header row holds
+the line while the entry is the selected container.
+-}
+selectionSuffix : UITreeNodeWithDisplayRegion -> String
+selectionSuffix node =
+    if
+        node
+            |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+            |> List.any
+                (\descendant ->
+                    (descendant.uiNode.pythonObjectTypeName == "SelectionIndicatorLine")
+                        && Common.isVisible descendant
+                )
+    then
+        " (selected)"
+
+    else
+        ""
 
 
 {-| A `Link` object, or text carrying the client's own link markup. The markup is checked before it
