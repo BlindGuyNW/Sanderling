@@ -26,7 +26,51 @@ import Html.Attributes as HA
 
 view : Context event -> OverviewWindow -> Html.Html event
 view context overviewWindow =
-    Common.section context "Overview" (\_ -> [ tableHtml context overviewWindow ])
+    Common.section context
+        --  The client's own caption announces the active tab and preset: `Overview (General: General)`.
+        (overviewWindow.caption |> Maybe.withDefault "Overview")
+        (\contextForContent ->
+            tabsHtml contextForContent overviewWindow
+                ++ [ tableHtml context overviewWindow ]
+        )
+
+
+{-| The tab strip, which is how whole categories of objects become visible at all: each tab is one
+overview preset, so an overview stuck on one tab permanently hides everything the other presets
+show. A left-click switches to the tab; its right-click menu carries the preset and customization
+options; and the client's own add-tab button follows the tabs, activate-only.
+
+Do not label these tabs from `_hint`: it reads `Failed to read string bytes.` on every one.
+`labelForControl` handles that -- the unreadable hint is discarded and the label falls through to
+the text the tab contains. Observed 2026-07-22.
+
+-}
+tabsHtml : Context event -> OverviewWindow -> List (Html.Html event)
+tabsHtml context overviewWindow =
+    let
+        tabEntries =
+            overviewWindow.tabs
+                |> List.filter Common.isVisible
+                |> Common.nodesInReadingOrder
+                |> List.map
+                    (\tab -> Common.control (Common.labelForControl Common.noNameTable tab) tab)
+
+        addTabEntries =
+            overviewWindow.addTabButton
+                |> Maybe.map List.singleton
+                |> Maybe.withDefault []
+                |> List.filter Common.isVisible
+                |> List.map
+                    (\button ->
+                        Common.controlActivateOnly (Common.labelForControl Common.noNameTable button) button
+                    )
+    in
+    case tabEntries ++ addTabEntries of
+        [] ->
+            []
+
+        entries ->
+            [ Common.actionList context entries ]
 
 
 {-| The column names the client is showing, left to right.

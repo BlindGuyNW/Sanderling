@@ -287,6 +287,9 @@ type alias Target =
 
 type alias OverviewWindow =
     { uiNode : UITreeNodeWithDisplayRegion
+    , caption : Maybe String
+    , tabs : List UITreeNodeWithDisplayRegion
+    , addTabButton : Maybe UITreeNodeWithDisplayRegion
     , entriesHeaders : List ( String, UITreeNodeWithDisplayRegion )
     , entries : List OverviewWindowEntry
     , scrollControls : Maybe ScrollControls
@@ -1748,6 +1751,41 @@ parseOverviewWindowsFromUITreeRoot uiTreeRoot =
 parseOverviewWindow : UITreeNodeWithDisplayRegion -> OverviewWindow
 parseOverviewWindow overviewWindowNode =
     let
+        {-
+           The caption is how the client itself announces the active tab: it reads
+           `Overview (General: General)`, i.e. tab name, then preset. Prefer it over inferring
+           selection from the SelectionIndicatorLine's geometry. Observed 2026-07-22.
+        -}
+        caption =
+            overviewWindowNode
+                |> listDescendantsWithDisplayRegion
+                |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "WindowCaption")
+                |> List.concatMap getAllContainedDisplayTextsWithRegion
+                |> List.map Tuple.first
+                |> List.filterMap discardUnreadableText
+                |> List.head
+
+        tabsGroupNode =
+            overviewWindowNode
+                |> listDescendantsWithDisplayRegion
+                |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "OverviewTabGroup")
+                |> List.head
+
+        tabsGroupDescendants =
+            tabsGroupNode
+                |> Maybe.map listDescendantsWithDisplayRegion
+                |> Maybe.withDefault []
+
+        tabs =
+            tabsGroupDescendants
+                |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "OverviewTab")
+
+        --  The ButtonIcon in the tab group's TrailingContainer, carrying the hint 'Add Tab'.
+        addTabButton =
+            tabsGroupDescendants
+                |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "ButtonIcon")
+                |> List.head
+
         scrollNode =
             overviewWindowNode
                 |> listDescendantsWithDisplayRegion
@@ -1780,6 +1818,9 @@ parseOverviewWindow overviewWindowNode =
                 |> List.map (parseOverviewWindowEntry entriesHeaders)
     in
     { uiNode = overviewWindowNode
+    , caption = caption
+    , tabs = tabs
+    , addTabButton = addTabButton
     , entriesHeaders = entriesHeaders
     , entries = entries
     , scrollControls = scrollControlsNode |> Maybe.map parseScrollControls
