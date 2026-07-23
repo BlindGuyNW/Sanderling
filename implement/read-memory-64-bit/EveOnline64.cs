@@ -1006,6 +1006,136 @@ public class EveOnline64
                 children: ReadChildren()?.Where(child => child is not null)?.ToArray());
     }
 
+    /*
+    The client's own answer to "what kind of widget is this".
+
+    The type *name* cannot answer it. `Button`, `TrackJobButton`, `ButtonWindow` and
+    `LeftSideButtonCargo` are all buttons, while `ButtonGroup` and `ButtonWrapper` are the
+    containers holding them, and no rule over the spelling separates those two sets - a
+    consumer matching on substrings picks the container and never reaches the button inside.
+    The inheritance does separate them, and the client already carries it: every python class
+    stores its method resolution order, most derived first, ending in `object`.
+
+    Read once per type name rather than per node: it is a fact about the class, and a reading
+    holds thousands of nodes drawn from a few hundred classes.
+    */
+    static public IImmutableDictionary<string, IReadOnlyList<string>> ReadPythonTypeHierarchy(
+        UITreeNode uiTree,
+        IMemoryReader memoryReader)
+    {
+        var addressOfFirstNodeOfEachType =
+            (uiTree?.EnumerateSelfAndDescendants() ?? [])
+            .Where(node => node is not null && 0 < node.pythonObjectTypeName?.Length)
+            .GroupBy(node => node.pythonObjectTypeName)
+            .ToImmutableDictionary(group => group.Key, group => group.First().pythonObjectAddress);
+
+        var hierarchy = ImmutableDictionary<string, IReadOnlyList<string>>.Empty.ToBuilder();
+
+        foreach (var (typeName, nodeAddress) in addressOfFirstNodeOfEachType)
+        {
+            if (ReadPythonTypeMroNamesFromPythonObjectAddress(nodeAddress, memoryReader) is not { } mroNames)
+                continue;
+
+            hierarchy[typeName] = mroNames;
+        }
+
+        return hierarchy.ToImmutable();
+    }
+
+    static IReadOnlyList<string> ReadPythonTypeMroNamesFromPythonObjectAddress(
+        ulong objectAddress,
+        IMemoryReader memoryReader)
+    {
+        //  ob_type, the second field of every python object.
+
+        if (memoryReader.ReadBytes(objectAddress, 0x10) is not { Length: 0x10 } objectMemory)
+            return null;
+
+        return
+            ReadPythonTypeMroNamesFromPythonTypeObjectAddress(
+                BitConverter.ToUInt64(objectMemory.Span[8..]),
+                memoryReader);
+    }
+
+    /*
+    https://github.com/python/cpython/blob/2.7/Include/object.h
+
+    PyTypeObject on 64-bit begins with PyObject_VAR_HEAD - ob_refcnt, ob_type, ob_size - so
+    `tp_name` lands at index 3, which is the offset the rest of this file already relies on.
+    Counting on from there through the slots puts `tp_mro` at index 43. `tp_mro` is a tuple of
+    type objects, so it is read as one: ob_size at index 2, then the items.
+    */
+    const int indexOfTpMroInPythonTypeObject = 43;
+
+    static IReadOnlyList<string> ReadPythonTypeMroNamesFromPythonTypeObjectAddress(
+        ulong typeObjectAddress,
+        IMemoryReader memoryReader)
+    {
+        var sizeToCoverTpMro = (indexOfTpMroInPythonTypeObject + 1) * 8;
+
+        if (memoryReader.ReadBytes(typeObjectAddress, sizeToCoverTpMro) is not { } typeObjectMemory ||
+            typeObjectMemory.Length != sizeToCoverTpMro)
+            return null;
+
+        var tp_mro =
+            TransformMemoryContent.AsULongMemory(typeObjectMemory).Span[indexOfTpMroInPythonTypeObject];
+
+        if (tp_mro is 0)
+            return null;
+
+        if (memoryReader.ReadBytes(tp_mro, 0x18) is not { Length: 0x18 } tupleHeaderMemory)
+            return null;
+
+        var ob_size = BitConverter.ToUInt64(tupleHeaderMemory.Span[0x10..]);
+
+        //  Guard against reading garbage as a length: the deepest client classes are far below this.
+        if (ob_size is 0 || 200 < ob_size)
+            return null;
+
+        var itemsSize = (int)ob_size * 8;
+
+        if (memoryReader.ReadBytes(tp_mro + 0x18, itemsSize) is not { } itemsMemory ||
+            itemsMemory.Length != itemsSize)
+            return null;
+
+        var items = TransformMemoryContent.AsULongMemory(itemsMemory);
+
+        var names = new List<string>();
+
+        for (var i = 0; i < items.Length; ++i)
+        {
+            if (ReadPythonTypeNameFromPythonTypeObjectAddress(items.Span[i], memoryReader) is not { } name)
+                return null;
+
+            names.Add(name);
+        }
+
+        return names;
+    }
+
+    static string ReadPythonTypeNameFromPythonTypeObjectAddress(
+        ulong typeObjectAddress,
+        IMemoryReader memoryReader)
+    {
+        if (memoryReader.ReadBytes(typeObjectAddress, 0x20) is not { Length: 0x20 } typeObjectMemory)
+            return null;
+
+        var tp_name = BitConverter.ToUInt64(typeObjectMemory.Span[0x18..]);
+
+        if (memoryReader.ReadBytes(tp_name, 0x100) is not { } nameBytes)
+            return null;
+
+        var nameSpan = nameBytes.Span;
+
+        for (var i = 0; i < nameSpan.Length; ++i)
+        {
+            if (nameSpan[i] is 0)
+                return System.Text.Encoding.ASCII.GetString(nameSpan[..i]);
+        }
+
+        return null;
+    }
+
     static string ReadPythonStringValue(ulong stringObjectAddress, IMemoryReader memoryReader, int maxLength)
     {
         //  https://github.com/python/cpython/blob/362ede2232107fc54d406bb9de7711ff7574e1d4/Include/stringobject.h
