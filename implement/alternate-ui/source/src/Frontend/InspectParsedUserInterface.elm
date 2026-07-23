@@ -57,6 +57,12 @@ type InputOnUINode
          place the client explains many of its numbers.
       -}
     | MouseHover
+      {- Drag the node to the given location and release: press-move-release with a midpoint so
+         the client registers the drag. This is how an item moves between inventory containers --
+         the client offers no menu path for it. Verified 2026-07-23 moving a 64-unit stack from
+         the item hangar onto the ship's entry in the container tree.
+      -}
+    | MouseDragTo { x : Int, y : Int }
 
 
 type ParsedUITreeViewPathNode
@@ -126,6 +132,9 @@ displayTextForInputKind inputKind =
 
         MouseHover ->
             "hover"
+
+        MouseDragTo _ ->
+            "dragto"
 
 
 renderTreeNodeFromParsedUserInterface :

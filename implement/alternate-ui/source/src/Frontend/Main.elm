@@ -437,6 +437,17 @@ update event stateBefore =
                                     [ Common.EffectOnWindow.MouseMoveTo clickLocation ]
                                         |> sequenceElements effectSequenceSpacingMilliseconds
 
+                                --  The slower spacing gives the client a frame to see each stage
+                                --  of the drag while the button is down; 150 ms per step moved
+                                --  an item stack reliably on a live client, 2026-07-23.
+                                MouseDragTo endLocation ->
+                                    Common.EffectOnWindow.effectsForDragAndDrop
+                                        { startLocation = clickLocation
+                                        , mouseButton = Common.EffectOnWindow.MouseButtonLeft
+                                        , endLocation = endLocation
+                                        }
+                                        |> sequenceElements 150
+
                                 {- Setting a slider is a press-move-release rather than a click.
                                    The press already jumps the handle to the pressed position, but
                                    two plain clicks near the same spot in quick succession fall to
@@ -1458,6 +1469,7 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                                , displayParsedContextMenus maybeInputRoute memoryReading.parsedUserInterface.contextMenus
                                , verticalSpacerFromHeightInEm 0.5
                                ]
+                            ++ displayInventoryMoveActions maybeInputRoute memoryReading.parsedUserInterface
                             ++ displayOtherWindows maybeInputRoute memoryReading.typeHierarchy memoryReading.parsedUserInterface
                         )
 
@@ -1681,6 +1693,143 @@ displayOtherWindows maybeInputRouteConfig typeHierarchy parsedUserInterface =
             (\contextForContent ->
                 windows |> List.map (Frontend.View.GenericWindow.view typeHierarchy contextForContent)
             )
+        ]
+
+
+{-| Moving an item between inventory containers is drag and drop in the game client -- it offers
+no menu path for it -- so the page offers each move as a button: the drag a sighted player
+performs by hand becomes one posted press-move-release. Verified 2026-07-23 by moving a 64-unit
+Tritanium stack from the item hangar to the ship's cargo on a live client.
+
+This is additive on top of the generic shell, in the sense of the curation policy set when the
+station view was retired: the shell renders the inventory window itself; this section only adds
+actions the shell cannot express, and never replaces anything.
+
+The offered targets are the window's own container tree entries, except the selected one -- the
+items already sit there. The drop lands on the entry's header row, which is where the client
+itself accepts a drop for that container; dropping on the ship's entry puts the item in its
+cargo hold.
+
+-}
+displayInventoryMoveActions : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.ParsedUserInterface -> List (Html.Html Event)
+displayInventoryMoveActions maybeInputRouteConfig parsedUserInterface =
+    let
+        context =
+            viewContextFromInputRouteConfig maybeInputRouteConfig 3
+
+        maximumItemsOffered =
+            12
+
+        flattenTreeEntries entries =
+            entries
+                |> List.concatMap
+                    (\entry ->
+                        entry
+                            :: flattenTreeEntries
+                                (entry.children
+                                    |> List.map
+                                        (\(EveOnline.ParseUserInterface.InventoryWindowLeftTreeEntryChild child) ->
+                                            child
+                                        )
+                                )
+                    )
+
+        entryHeaderNode entry =
+            entry.selectRegion |> Maybe.withDefault entry.uiNode
+
+        --  The same marking the generic shell reads: the client draws its selection line inside
+        --  the selected entry's header row.
+        entryIsSelected entry =
+            EveOnline.ParseUserInterface.subtreeShowsSelectionIndicator (entryHeaderNode entry)
+
+        itemLabel item =
+            case ( item.name, item.quantity ) of
+                ( Just name, Just quantity ) ->
+                    if 1 < quantity then
+                        String.fromInt quantity ++ " " ++ name
+
+                    else
+                        name
+
+                ( Just name, Nothing ) ->
+                    name
+
+                ( Nothing, _ ) ->
+                    "unnamed item"
+
+        moveEntriesForWindow inventoryWindow =
+            let
+                items =
+                    inventoryWindow.items
+                        |> List.filter (.uiNode >> Frontend.View.Common.isVisible)
+
+                targets =
+                    inventoryWindow.leftTreeEntries
+                        |> flattenTreeEntries
+                        |> List.filter (entryHeaderNode >> Frontend.View.Common.isVisible)
+                        |> List.filter (entryIsSelected >> not)
+
+                moveEntry item target =
+                    { label =
+                        "Move "
+                            ++ itemLabel item
+                            ++ " to "
+                            ++ Frontend.View.Common.plainText target.text
+                    , target =
+                        Just
+                            { node = item.uiNode
+                            , canMenu = False
+                            , activate =
+                                MouseDragTo
+                                    (EveOnline.ParseUserInterface.centerFromDisplayRegion
+                                        (entryHeaderNode target).totalDisplayRegionVisible
+                                    )
+                            }
+                    , checkState = Nothing
+                    , sliderPercent = Nothing
+                    , fieldText = Nothing
+                    }
+
+                offeredItems =
+                    items |> List.take maximumItemsOffered
+
+                notOfferedCount =
+                    List.length items - List.length offeredItems
+
+                cutoffEntries =
+                    if notOfferedCount < 1 then
+                        []
+
+                    else
+                        [ Frontend.View.Common.prose
+                            (String.fromInt notOfferedCount
+                                ++ " further items in this container are not offered here."
+                            )
+                        ]
+            in
+            if List.isEmpty items || List.isEmpty targets then
+                []
+
+            else
+                (offeredItems
+                    |> List.concatMap (\item -> targets |> List.map (moveEntry item))
+                )
+                    ++ cutoffEntries
+
+        moveEntries =
+            parsedUserInterface.inventoryWindows
+                |> List.filter (.uiNode >> Frontend.View.Common.isVisible)
+                |> List.concatMap moveEntriesForWindow
+    in
+    if List.isEmpty moveEntries then
+        []
+
+    else
+        [ Frontend.View.Common.section
+            context
+            "Moving items"
+            (\contextForContent -> [ Frontend.View.Common.actionList contextForContent moveEntries ])
+        , verticalSpacerFromHeightInEm 0.5
         ]
 
 

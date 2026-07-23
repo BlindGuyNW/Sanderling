@@ -2830,6 +2830,29 @@ removeMarkupTags text =
             Regex.replace regex (always "") text
 
 
+{-| Whether this subtree shows the client's selection highlight: a `SelectionIndicatorLine`
+that is actually drawn. The client hides the line by turning its alpha to zero rather than by
+removing it or collapsing its region, so presence and geometry say nothing -- the color's alpha
+is the signal. Observed 2026-07-23 on the inventory's container tree, which kept an alpha-0
+line parked on the previously selected container while the selected one carried alpha 99.
+-}
+subtreeShowsSelectionIndicator : UITreeNodeWithDisplayRegion -> Bool
+subtreeShowsSelectionIndicator node =
+    node
+        |> listDescendantsWithDisplayRegion
+        |> List.any
+            (\descendant ->
+                (descendant.uiNode.pythonObjectTypeName == "SelectionIndicatorLine")
+                    && (0 < descendant.totalDisplayRegionVisible.width)
+                    && (0 < descendant.totalDisplayRegionVisible.height)
+                    && (descendant.uiNode
+                            |> getColorPercentFromDictEntries
+                            |> Maybe.map (\color -> 50 <= color.a)
+                            |> Maybe.withDefault True
+                       )
+            )
+
+
 {-| The `alt` attribute of the first link in a text of the client's markup, which is where the
 client names the *role* a linked thing plays: `alt="Next System in Route"` and
 `alt="Current Destination"` on the route panel's waypoints, `alt='Nearest'` on the location

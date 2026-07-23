@@ -836,7 +836,11 @@ collapsedControlForNode node childItems =
                     Nothing
 
                 else
-                    Just (Control (Common.control label node))
+                    --  The selection suffix here as well as on the candidate branches: an entry
+                    --  that holds a child entry -- the active ship in the inventory tree -- has
+                    --  its header row collapse through this path, and the client draws the
+                    --  selection line in that header row.
+                    Just (Control (Common.control (label ++ selectionSuffix node) node))
 
 
 positionOfNode : UITreeNodeWithDisplayRegion -> ( Int, Int )
@@ -1239,19 +1243,12 @@ by drawing a `SelectionIndicatorLine` inside the entry's own subtree, which is g
 color, so a screen reader hears nothing of it. Only a line *inside* the control marks it: a tab
 strip draws its one line beside the tabs in the group container, so tabs are not told apart this
 way. Observed 2026-07-23 on the inventory's container tree, where the entry's header row holds
-the line while the entry is the selected container.
+the line while the entry is the selected container. Whether a line is actually drawn is its
+alpha, not its presence -- see `subtreeShowsSelectionIndicator`.
 -}
 selectionSuffix : UITreeNodeWithDisplayRegion -> String
 selectionSuffix node =
-    if
-        node
-            |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
-            |> List.any
-                (\descendant ->
-                    (descendant.uiNode.pythonObjectTypeName == "SelectionIndicatorLine")
-                        && Common.isVisible descendant
-                )
-    then
+    if EveOnline.ParseUserInterface.subtreeShowsSelectionIndicator node then
         " (selected)"
 
     else

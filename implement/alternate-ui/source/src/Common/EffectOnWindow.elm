@@ -47,10 +47,19 @@ effectsMouseClickAtLocation mouseButton location =
     ]
 
 
+{-| The move through a midpoint is what makes a long drag register: the client wants to see the
+pointer travel while the button is down before it treats the gesture as a drag. Verified
+2026-07-23 moving an item stack between inventory containers on a live client. For the one-pixel
+jiggle the sliders use, the midpoint coincides with the endpoints and changes nothing.
+-}
 effectsForDragAndDrop : { startLocation : Location2d, mouseButton : MouseButton, endLocation : Location2d } -> List EffectOnWindowStructure
 effectsForDragAndDrop { startLocation, mouseButton, endLocation } =
     [ MouseMoveTo startLocation
     , KeyDown (virtualKeyCodeFromMouseButton mouseButton)
+    , MouseMoveTo
+        { x = (startLocation.x + endLocation.x) // 2
+        , y = (startLocation.y + endLocation.y) // 2
+        }
     , MouseMoveTo endLocation
     , KeyUp (virtualKeyCodeFromMouseButton mouseButton)
     ]
