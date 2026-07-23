@@ -325,21 +325,55 @@ update event stateBefore =
 
                 Nothing ->
                     let
-                        uiNodeCenter =
-                            sendInput.uiNode.totalDisplayRegionVisible
-                                |> EveOnline.ParseUserInterface.centerFromDisplayRegion
+                        {- The scroll state of the game client is not something the player should
+                           have to know about: an entry the page lists is an entry that can be
+                           clicked. When the node sits outside its scroll container's visible
+                           area, the click is preceded by the wheel rotation that brings it into
+                           view, and aimed at where the node will be afterwards.
+                        -}
+                        maybeScrollToReveal =
+                            stateBefore.readFromLiveProcess
+                                |> decideNextStepToReadFromLiveProcess { timeMilli = stateBefore.timeMilli }
+                                |> Tuple.second
+                                |> .lastMemoryReading
+                                |> Maybe.andThen (.memoryReading >> .parseResult >> Result.toMaybe)
+                                |> Maybe.andThen (scrollToRevealNode sendInput.uiNode)
 
-                        volatileProcessInterfaceEffects =
+                        clickLocation =
+                            case maybeScrollToReveal of
+                                Just scrollToReveal ->
+                                    scrollToReveal.clickLocation
+
+                                Nothing ->
+                                    sendInput.uiNode.totalDisplayRegionVisible
+                                        |> EveOnline.ParseUserInterface.centerFromDisplayRegion
+
+                        clickEffects =
                             case sendInput.input of
                                 MouseClickLeft ->
                                     Common.EffectOnWindow.effectsMouseClickAtLocation
                                         Common.EffectOnWindow.MouseButtonLeft
-                                        uiNodeCenter
+                                        clickLocation
 
                                 MouseClickRight ->
                                     Common.EffectOnWindow.effectsMouseClickAtLocation
                                         Common.EffectOnWindow.MouseButtonRight
-                                        uiNodeCenter
+                                        clickLocation
+
+                        sequenceElements effects =
+                            effects
+                                |> List.map (effectOnWindowAsVolatileHostEffectOnWindow >> EveOnline.VolatileProcessInterface.Effect)
+                                |> List.intersperse (EveOnline.VolatileProcessInterface.DelayMilliseconds effectSequenceSpacingMilliseconds)
+
+                        task =
+                            case maybeScrollToReveal of
+                                Nothing ->
+                                    sequenceElements clickEffects
+
+                                Just scrollToReveal ->
+                                    sequenceElements scrollToReveal.effects
+                                        ++ [ EveOnline.VolatileProcessInterface.DelayMilliseconds scrollSettleDelayMilliseconds ]
+                                        ++ sequenceElements clickEffects
 
                         requestSendInputToGameClient =
                             apiRequestCmd
@@ -347,10 +381,7 @@ update event stateBefore =
                                     (EveOnline.VolatileProcessInterface.EffectSequenceOnWindow
                                         { windowId = sendInput.windowId
                                         , bringWindowToForeground = False
-                                        , task =
-                                            volatileProcessInterfaceEffects
-                                                |> List.map (effectOnWindowAsVolatileHostEffectOnWindow >> EveOnline.VolatileProcessInterface.Effect)
-                                                |> List.intersperse (EveOnline.VolatileProcessInterface.DelayMilliseconds effectSequenceSpacingMilliseconds)
+                                        , task = task
                                         }
                                     )
                                 )
@@ -380,11 +411,208 @@ update event stateBefore =
             ( stateBefore, Cmd.none )
 
 
+{-| One tick of the mouse wheel moves a scroll container of the game client by this many pixels.
+Measured against the settings window's panel on 2026-07-23: single ticks moved the content 50 px
+each, and five ticks in one message moved it 252 px. The click after a scroll aims to land the
+node at the middle of the viewport, so a container that scrolls somewhat faster or slower than
+this still leaves the node within reach.
+-}
+pixelsPerWheelTick : Int
+pixelsPerWheelTick =
+    50
+
+
+{-| How long to give the game client to complete a scroll before clicking where the node is
+predicted to be. Scrolling settles well within this on the settings window.
+-}
+scrollSettleDelayMilliseconds : Int
+scrollSettleDelayMilliseconds =
+    300
+
+
+{-| The wheel delta field of a window message is 16 bits, so one message can carry only so many
+ticks. Splitting far scrolls into several messages keeps each within range; 25 ticks is 1250 px.
+-}
+maximumWheelTicksPerMessage : Int
+maximumWheelTicksPerMessage =
+    25
+
+
+{-| The client classes that clip and scroll their content, matched anywhere in a type's
+inheritance chain. The debt `CONVENTIONS.md` rule 4 describes: `ScrollContainer` was observed in
+the settings window on 2026-07-23; `Scroll` and `BasicDynamicScroll` are the bases the ordinary
+list windows build their scroll areas from.
+-}
+scrollContainerClassNames : List String
+scrollContainerClassNames =
+    [ "ScrollContainer", "Scroll", "BasicDynamicScroll" ]
+
+
+type alias ScrollToRevealStructure =
+    { effects : List Common.EffectOnWindow.EffectOnWindowStructure
+    , clickLocation : Common.EffectOnWindow.Location2d
+    }
+
+
+{-| The wheel rotations that bring the given node into the visible part of its scroll container,
+and where the node will be once they have happened -- or `Nothing` when the node needs no
+scrolling to be clicked.
+
+The node the view carried may come from an older reading than the latest one, so it is first
+re-resolved by its address. The scroll distance aims to land the node at the middle of the
+viewport, capped at the end of the container's content so the prediction cannot outrun the
+client's own clamping -- without the cap, asking for a node near the content's end would predict
+a position the clamped scroll never reaches, and the click would land far from it.
+
+-}
+scrollToRevealNode : EveOnline.ParseUserInterface.UITreeNodeWithDisplayRegion -> ParseMemoryReadingSuccess -> Maybe ScrollToRevealStructure
+scrollToRevealNode nodeAsCarried parseSuccess =
+    let
+        node =
+            parseSuccess.uiNodesWithDisplayRegion
+                |> Dict.get nodeAsCarried.uiNode.pythonObjectAddress
+                |> Maybe.withDefault nodeAsCarried
+
+        nodeCenter =
+            node.totalDisplayRegion |> EveOnline.ParseUserInterface.centerFromDisplayRegion
+    in
+    ancestorsOfNode node.uiNode.pythonObjectAddress parseSuccess.parsedUserInterface.uiTree
+        |> Maybe.withDefault []
+        |> List.filter (isScrollingContainer parseSuccess.typeHierarchy)
+        --  The nearest enclosing scroll container: ancestors arrive root-first.
+        |> List.reverse
+        |> List.head
+        |> Maybe.andThen
+            (\scrollContainer ->
+                let
+                    viewport =
+                        scrollContainer.totalDisplayRegion
+
+                    viewportTop =
+                        viewport.y
+
+                    viewportBottom =
+                        viewport.y + viewport.height
+
+                    viewportMiddle =
+                        viewport.y + viewport.height // 2
+
+                    margin =
+                        min 100 (viewport.height // 4)
+
+                    descendantRegions =
+                        scrollContainer
+                            |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+                            |> List.map .totalDisplayRegion
+
+                    contentTop =
+                        descendantRegions |> List.map .y |> List.minimum |> Maybe.withDefault viewportTop
+
+                    contentBottom =
+                        descendantRegions
+                            |> List.map (\region -> region.y + region.height)
+                            |> List.maximum
+                            |> Maybe.withDefault viewportBottom
+
+                    scrollPixels =
+                        if viewportBottom - margin < nodeCenter.y then
+                            --  Below the fold: scroll the view down, at most to the content's end.
+                            min (nodeCenter.y - viewportMiddle) (contentBottom - viewportBottom) |> max 0
+
+                        else if nodeCenter.y < viewportTop + margin then
+                            --  Above the fold: scroll the view up, at most to the content's start.
+                            -(min (viewportMiddle - nodeCenter.y) (viewportTop - contentTop) |> max 0)
+
+                        else
+                            0
+
+                    --  Wheel convention: negative ticks scroll the view down.
+                    deltaTicks =
+                        -((abs scrollPixels + pixelsPerWheelTick // 2) // pixelsPerWheelTick)
+                            * (if 0 < scrollPixels then
+                                1
+
+                               else
+                                -1
+                              )
+
+                    wheelLocation =
+                        viewport |> EveOnline.ParseUserInterface.centerFromDisplayRegion
+                in
+                if deltaTicks == 0 then
+                    Nothing
+
+                else
+                    Just
+                        { effects =
+                            Common.EffectOnWindow.MouseMoveTo wheelLocation
+                                :: (deltaTicks
+                                        |> splitIntoWheelMessages
+                                        |> List.map
+                                            (\ticks ->
+                                                Common.EffectOnWindow.VerticalScrollAt
+                                                    { location = wheelLocation, deltaTicks = ticks }
+                                            )
+                                   )
+                        , clickLocation =
+                            { x = nodeCenter.x
+                            , y = nodeCenter.y + deltaTicks * pixelsPerWheelTick
+                            }
+                        }
+            )
+
+
+splitIntoWheelMessages : Int -> List Int
+splitIntoWheelMessages totalTicks =
+    if totalTicks == 0 then
+        []
+
+    else
+        let
+            step =
+                clamp (negate maximumWheelTicksPerMessage) maximumWheelTicksPerMessage totalTicks
+        in
+        step :: splitIntoWheelMessages (totalTicks - step)
+
+
+isScrollingContainer : Dict.Dict String (List String) -> EveOnline.ParseUserInterface.UITreeNodeWithDisplayRegion -> Bool
+isScrollingContainer typeHierarchy node =
+    let
+        typeName =
+            node.uiNode.pythonObjectTypeName
+
+        inheritanceChain =
+            Dict.get typeName typeHierarchy |> Maybe.withDefault [ typeName ]
+    in
+    scrollContainerClassNames
+        |> List.any (\className -> List.member className inheritanceChain)
+
+
+{-| The nodes above the one with the given address, from the root down, excluding the node itself.
+-}
+ancestorsOfNode : String -> EveOnline.ParseUserInterface.UITreeNodeWithDisplayRegion -> Maybe (List EveOnline.ParseUserInterface.UITreeNodeWithDisplayRegion)
+ancestorsOfNode nodeAddress fromNode =
+    if fromNode.uiNode.pythonObjectAddress == nodeAddress then
+        Just []
+
+    else
+        fromNode
+            |> EveOnline.ParseUserInterface.listChildrenWithDisplayRegion
+            |> List.filterMap (ancestorsOfNode nodeAddress >> Maybe.map ((::) fromNode))
+            |> List.head
+
+
 effectOnWindowAsVolatileHostEffectOnWindow : Common.EffectOnWindow.EffectOnWindowStructure -> EveOnline.VolatileProcessInterface.EffectOnWindowStructure
 effectOnWindowAsVolatileHostEffectOnWindow effectOnWindow =
     case effectOnWindow of
         Common.EffectOnWindow.MouseMoveTo mouseMoveTo ->
             EveOnline.VolatileProcessInterface.MouseMoveTo { location = mouseMoveTo }
+
+        Common.EffectOnWindow.VerticalScrollAt verticalScrollAt ->
+            EveOnline.VolatileProcessInterface.VerticalScrollAt
+                { location = verticalScrollAt.location
+                , deltaTicks = verticalScrollAt.deltaTicks
+                }
 
         Common.EffectOnWindow.KeyDown key ->
             EveOnline.VolatileProcessInterface.KeyDown key

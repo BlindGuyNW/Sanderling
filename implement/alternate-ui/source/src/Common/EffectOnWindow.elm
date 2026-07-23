@@ -6,8 +6,18 @@ module Common.EffectOnWindow exposing (..)
 
 type EffectOnWindowStructure
     = MouseMoveTo Location2d
+    | VerticalScrollAt VerticalScrollAtStructure
     | KeyDown VirtualKeyCode
     | KeyUp VirtualKeyCode
+
+
+{-| A rotation of the mouse wheel over the given location, in wheel ticks. Windows wheel
+convention: negative ticks scroll the view down, revealing content below; positive up.
+-}
+type alias VerticalScrollAtStructure =
+    { location : Location2d
+    , deltaTicks : Int
+    }
 
 
 type alias MouseClickAtLocation =

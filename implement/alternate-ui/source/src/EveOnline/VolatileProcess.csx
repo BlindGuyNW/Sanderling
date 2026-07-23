@@ -127,9 +127,18 @@ class Request
     {
         public MouseMoveToStructure MouseMoveTo;
 
+        public VerticalScrollAtStructure VerticalScrollAt;
+
         public KeyboardKey KeyDown;
 
         public KeyboardKey KeyUp;
+    }
+
+    public class VerticalScrollAtStructure
+    {
+        public Location2d location;
+
+        public int deltaTicks;
     }
 
     public class KeyboardKey
@@ -490,6 +499,11 @@ void ExecuteEffectOnWindow(
         windowMotor.ActSequenceMotion(motionSequence);
     }
 
+    if (effectOnWindow?.VerticalScrollAt != null)
+    {
+        new WindowsInput.InputSimulator().Mouse.VerticalScroll(effectOnWindow.VerticalScrollAt.deltaTicks);
+    }
+
     if (effectOnWindow?.KeyDown != null)
     {
         var virtualKeyCode = (WindowsInput.Native.VirtualKeyCode)effectOnWindow.KeyDown.virtualKeyCode;
@@ -519,6 +533,15 @@ void ExecuteEffectOnWindowViaMessages(
             windowHandle,
             (int)effectOnWindow.MouseMoveTo.location.x,
             (int)effectOnWindow.MouseMoveTo.location.y);
+    }
+
+    if (effectOnWindow?.VerticalScrollAt != null)
+    {
+        InputViaWindowMessages.VerticalScroll(
+            windowHandle,
+            (int)effectOnWindow.VerticalScrollAt.location.x,
+            (int)effectOnWindow.VerticalScrollAt.location.y,
+            effectOnWindow.VerticalScrollAt.deltaTicks);
     }
 
     /*
@@ -699,8 +722,11 @@ static public class InputViaWindowMessages
     const uint WM_LBUTTONUP = 0x0202;
     const uint WM_RBUTTONDOWN = 0x0204;
     const uint WM_RBUTTONUP = 0x0205;
+    const uint WM_MOUSEWHEEL = 0x020A;
     const uint WM_KEYDOWN = 0x0100;
     const uint WM_KEYUP = 0x0101;
+
+    const int WHEEL_DELTA = 120;
 
     const int MK_LBUTTON = 0x0001;
     const int MK_RBUTTON = 0x0002;
@@ -821,6 +847,45 @@ static public class InputViaWindowMessages
                 isLeft ? WM_LBUTTONUP : WM_RBUTTONUP,
                 new IntPtr(mouseButtonsDown),
                 LParamFromLocation(lastMouseLocation.x, lastMouseLocation.y));
+        }
+    }
+
+    /*
+    Rotates the mouse wheel over the given client-area location. The client scrolls the container
+    under that position; measured against the settings window on 2026-07-23, one tick moves the
+    content 50 px, several ticks in one message accumulate, and the client clamps cleanly at both
+    ends of the content. Negative ticks scroll the view down (reveal content below), as on a
+    physical wheel.
+
+    Two things differ from the button messages: WM_MOUSEWHEEL carries SCREEN coordinates in its
+    lParam where every other mouse message carries client coordinates, and the wheel delta rides
+    in the high word of wParam. The preceding WM_MOUSEMOVE and the settle wait are kept because
+    the client hit-tests the wheel against its pointer position the same way it does a click.
+    */
+    static public void VerticalScroll(IntPtr windowHandle, int x, int y, int deltaTicks)
+    {
+        lock (mutex)
+        {
+            EnsureCursorInsideClientArea(windowHandle);
+
+            lastMouseLocation = new WinApi.Point(x, y);
+
+            WinApi.PostMessage(
+                windowHandle, WM_MOUSEMOVE, new IntPtr(mouseButtonsDown), LParamFromLocation(x, y));
+
+            sinceLastMouseMove.Restart();
+
+            WaitForClientToPickUpMouseMove();
+
+            var screenPoint = new WinApi.Point(x, y);
+
+            if (!WinApi.ClientToScreen(windowHandle, ref screenPoint))
+                return;
+
+            var wParam = new IntPtr((long)(((uint)(deltaTicks * WHEEL_DELTA) & 0xFFFF) << 16));
+
+            WinApi.PostMessage(
+                windowHandle, WM_MOUSEWHEEL, wParam, LParamFromLocation(screenPoint.x, screenPoint.y));
         }
     }
 

@@ -102,12 +102,19 @@ type
        | TextEntry String
     -}
     = MouseMoveTo MouseMoveToStructure
+    | VerticalScrollAt VerticalScrollAtStructure
     | KeyDown VirtualKeyCode
     | KeyUp VirtualKeyCode
 
 
 type alias MouseMoveToStructure =
     { location : Location2d }
+
+
+type alias VerticalScrollAtStructure =
+    { location : Location2d
+    , deltaTicks : Int
+    }
 
 
 type alias WindowId =
@@ -219,6 +226,11 @@ encodeEffectOnWindowStructure effectOnWindow =
                 [ ( "MouseMoveTo", mouseMoveTo |> encodeMouseMoveTo )
                 ]
 
+        VerticalScrollAt verticalScrollAt ->
+            Json.Encode.object
+                [ ( "VerticalScrollAt", verticalScrollAt |> encodeVerticalScrollAt )
+                ]
+
         KeyDown virtualKeyCode ->
             Json.Encode.object
                 [ ( "KeyDown", virtualKeyCode |> encodeKey )
@@ -234,9 +246,25 @@ decodeEffectOnWindowStructure : Json.Decode.Decoder EffectOnWindowStructure
 decodeEffectOnWindowStructure =
     Json.Decode.oneOf
         [ Json.Decode.field "MouseMoveTo" (decodeMouseMoveTo |> Json.Decode.map MouseMoveTo)
+        , Json.Decode.field "VerticalScrollAt" (decodeVerticalScrollAt |> Json.Decode.map VerticalScrollAt)
         , Json.Decode.field "KeyDown" (decodeKey |> Json.Decode.map KeyDown)
         , Json.Decode.field "KeyUp" (decodeKey |> Json.Decode.map KeyUp)
         ]
+
+
+encodeVerticalScrollAt : VerticalScrollAtStructure -> Json.Encode.Value
+encodeVerticalScrollAt verticalScrollAt =
+    Json.Encode.object
+        [ ( "location", verticalScrollAt.location |> encodeLocation2d )
+        , ( "deltaTicks", verticalScrollAt.deltaTicks |> Json.Encode.int )
+        ]
+
+
+decodeVerticalScrollAt : Json.Decode.Decoder VerticalScrollAtStructure
+decodeVerticalScrollAt =
+    Json.Decode.map2 VerticalScrollAtStructure
+        (Json.Decode.field "location" jsonDecodeLocation2d)
+        (Json.Decode.field "deltaTicks" Json.Decode.int)
 
 
 encodeKey : VirtualKeyCode -> Json.Encode.Value

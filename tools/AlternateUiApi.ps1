@@ -320,6 +320,23 @@ function Send-MouseClick {
     )
 }
 
+function Send-VerticalScroll {
+    <#
+    .SYNOPSIS
+    Rotate the mouse wheel over a location in client coordinates. Negative ticks scroll the
+    view down (reveal content below). One tick moves a scroll container about 50 px.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)][int]$X,
+        [Parameter(Mandatory = $true)][int]$Y,
+        [Parameter(Mandatory = $true)][int]$Ticks
+    )
+    Send-EffectSequence -Context $Context -Task @(
+        @{ Effect = @(@{ VerticalScrollAt = @(@{ location = @{ x = $X; y = $Y }; deltaTicks = $Ticks }) }) }
+    )
+}
+
 function Send-KeyStroke {
     <#
     .SYNOPSIS
