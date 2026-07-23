@@ -1,4 +1,4 @@
-module Frontend.View.GenericWindow exposing (view)
+module Frontend.View.GenericWindow exposing (panelBodyHtml, view)
 
 {-| Presents a window of the game client without knowing what kind of window it is.
 
@@ -100,6 +100,18 @@ type alias ProseText =
 view : Dict.Dict String (List String) -> Context event -> GenericWindow -> Html.Html event
 view typeHierarchy context window =
     Common.section context (titleForWindow window) (bodyHtml typeHierarchy window)
+
+
+{-| The content of one panel that is not a window, read the same way a window's content is:
+the walk, the grouping, the tables. The degrade-over-disappearing rule the windows follow
+(`CONVENTIONS.md` rule 2) had no equivalent for content outside a window frame -- the info
+panels beside the screen edge -- so a panel without a specialized view was not presented at
+all. This is the shared piece a fallback is built from. Observed missing on the route info
+panel, 2026-07-23.
+-}
+panelBodyHtml : Dict.Dict String (List String) -> Context event -> UITreeNodeWithDisplayRegion -> List (Html.Html event)
+panelBodyHtml typeHierarchy context node =
+    walk typeHierarchy node |> .items |> groupedHtml context
 
 
 titleForWindow : GenericWindow -> String

@@ -16,7 +16,37 @@ allTests =
         , parse_security_status_percent_from_ui_node_text
         , parse_current_solar_system_from_ui_node_text
         , column_cell_texts_from_row_text
+        , alt_text_from_markup
         ]
+
+
+alt_text_from_markup : Test.Test
+alt_text_from_markup =
+    [ -- 2026-07-23 route info panel, docked with a 3-jump route set. Both quote styles occur.
+      ( "<center><a href=\"showinfo:5//30004972\" alt=\"Next System in Route\">Algogille</a></b> <hint=\"Security status\"><color=#ff3a9aeb>0.9</color></hint><fontsize=12><fontsize=8> </fontsize>&lt;<fontsize=8> </fontsize><a href=\"showinfo:4//20000727\">Crux</a><fontsize=8> </fontsize>&lt;<fontsize=8> </fontsize><a href=\"showinfo:3//10000064\">Essence</a></fontsize></center>"
+      , Just "Next System in Route"
+      )
+    , ( "<center><a href=\"showinfo:5//30004969\" alt=\"Current Destination\">Oursulaert</a></b> <hint=\"Security status\"><color=#ff3a9aeb>0.9</color></hint></center>"
+      , Just "Current Destination"
+      )
+
+    -- 2026-07-23 location info panel's nearest-location link, single quotes.
+    , ( "<url=showinfo:14//40343805 alt='Nearest'>Couster II - Moon 1</url>"
+      , Just "Nearest"
+      )
+    , ( "<a href=\"showinfo:4//20000727\">Crux</a>"
+      , Nothing
+      )
+    ]
+        |> List.map
+            (\( markupText, expectedResult ) ->
+                Test.test markupText <|
+                    \_ ->
+                        markupText
+                            |> EveOnline.ParseUserInterface.altTextFromMarkup
+                            |> Expect.equal expectedResult
+            )
+        |> Test.describe "Alt text from markup"
 
 
 column_cell_texts_from_row_text : Test.Test

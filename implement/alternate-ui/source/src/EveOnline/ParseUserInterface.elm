@@ -213,6 +213,14 @@ type alias InfoPanelContainer =
     , infoPanelRoute : Maybe InfoPanelRoute
     , infoPanelAgentMissions : Maybe InfoPanelAgentMissions
     , agentMissionEntries : List AgentMissionEntry
+
+    {- The panels in the container that no specialized parse function claims, so the view can
+       fall back to reading them generically instead of dropping them. The same
+       degrade-over-disappearing rule the windows follow; the info panels had no fallback, and a
+       panel we had not specialized -- the route panel -- was thrown away entirely. Observed
+       2026-07-23.
+    -}
+    , otherPanels : List UITreeNodeWithDisplayRegion
     }
 
 
@@ -251,7 +259,24 @@ type alias InfoPanelIcons =
 
 type alias InfoPanelRoute =
     { uiNode : UITreeNodeWithDisplayRegion
+
+    --  The panel's own header, e.g. "Route 3 Jumps".
+    , headerText : Maybe String
+
+    --  The next system on the route, and the final destination, with their raw markup text:
+    --  the link's alt attribute carries the client's own role name ("Next System in Route",
+    --  "Current Destination"), and the text renders to system, security, constellation and
+    --  region. The per-jump markers between them are icon-only sprites carrying no text at all.
+    --  Observed 2026-07-23 with a 3-jump route set while docked.
+    , nextWaypoint : Maybe RouteWaypointPanel
+    , destination : Maybe RouteWaypointPanel
     , routeElementMarker : List InfoPanelRouteRouteElementMarker
+    }
+
+
+type alias RouteWaypointPanel =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , text : Maybe String
     }
 
 
@@ -1119,6 +1144,29 @@ parseInfoPanelContainerFromUIRoot uiTreeRoot =
             Nothing
 
         Just containerNode ->
+            let
+                --  Panel types a specialized parse function reads. The job board is claimed by
+                --  its content: `agentMissionEntries` reads the mission entries directly, so a
+                --  panel holding them is spoken for whatever its type is called.
+                specializedPanelTypes =
+                    [ "InfoPanelLocationInfo", "InfoPanelRoute", "InfoPanelAgentMissions" ]
+
+                holdsAgentMissionEntries panelNode =
+                    panelNode
+                        |> listDescendantsWithDisplayRegion
+                        |> List.any (.uiNode >> .pythonObjectTypeName >> (==) "AgentMissionInfoPanelEntry")
+
+                otherPanels =
+                    containerNode
+                        |> listChildrenWithDisplayRegion
+                        |> List.filter (.uiNode >> getNameFromDictEntries >> (==) (Just "mainCont"))
+                        |> List.concatMap listChildrenWithDisplayRegion
+                        |> List.filter
+                            (\panel ->
+                                not (List.member panel.uiNode.pythonObjectTypeName specializedPanelTypes)
+                                    && not (holdsAgentMissionEntries panel)
+                            )
+            in
             Just
                 { uiNode = containerNode
                 , icons = parseInfoPanelIconsFromInfoPanelContainer containerNode
@@ -1126,6 +1174,7 @@ parseInfoPanelContainerFromUIRoot uiTreeRoot =
                 , infoPanelRoute = parseInfoPanelRouteFromInfoPanelContainer containerNode
                 , infoPanelAgentMissions = parseInfoPanelAgentMissionsFromInfoPanelContainer containerNode
                 , agentMissionEntries = parseAgentMissionEntriesFromInfoPanelContainer containerNode
+                , otherPanels = otherPanels
                 }
 
 
@@ -1291,8 +1340,37 @@ parseInfoPanelRouteFromInfoPanelContainer infoPanelContainerNode =
                         |> listDescendantsWithDisplayRegion
                         |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "AutopilotDestinationIcon")
                         |> List.map (\uiNode -> { uiNode = uiNode })
+
+                waypointPanelOfType panelTypeName =
+                    infoPanelRouteNode
+                        |> listDescendantsWithDisplayRegion
+                        |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) panelTypeName)
+                        |> List.head
+                        |> Maybe.map
+                            (\panelNode ->
+                                { uiNode = panelNode
+                                , text =
+                                    panelNode
+                                        |> getAllContainedDisplayTextsWithRegion
+                                        |> List.map Tuple.first
+                                        |> List.head
+                                }
+                            )
+
+                headerText =
+                    infoPanelRouteNode
+                        |> listDescendantsWithDisplayRegion
+                        |> List.filter (.uiNode >> getNameFromDictEntries >> (==) (Just "headerCont"))
+                        |> List.concatMap (getAllContainedDisplayTextsWithRegion >> List.map Tuple.first)
+                        |> List.head
             in
-            Just { uiNode = infoPanelRouteNode, routeElementMarker = routeElementMarker }
+            Just
+                { uiNode = infoPanelRouteNode
+                , headerText = headerText
+                , nextWaypoint = waypointPanelOfType "NextWaypointPanel"
+                , destination = waypointPanelOfType "DestinationWaypointPanel"
+                , routeElementMarker = routeElementMarker
+                }
 
 
 parseAgentMissionEntriesFromInfoPanelContainer : UITreeNodeWithDisplayRegion -> List AgentMissionEntry
@@ -2750,6 +2828,26 @@ removeMarkupTags text =
 
         Just regex ->
             Regex.replace regex (always "") text
+
+
+{-| The `alt` attribute of the first link in a text of the client's markup, which is where the
+client names the *role* a linked thing plays: `alt="Next System in Route"` and
+`alt="Current Destination"` on the route panel's waypoints, `alt='Nearest'` on the location
+panel's station link -- both quote styles occur. Observed 2026-07-23, docked with a route set.
+The role makes two otherwise near-identical lines tell apart, e.g. the route's next system and
+final destination, which render to the same system-security-region shape.
+-}
+altTextFromMarkup : String -> Maybe String
+altTextFromMarkup text =
+    case Regex.fromString "alt=[\"']([^\"']*)[\"']" of
+        Nothing ->
+            Nothing
+
+        Just regex ->
+            Regex.find regex text
+                |> List.head
+                |> Maybe.andThen (.submatches >> List.head)
+                |> Maybe.andThen identity
 
 
 {-| The cells of one table row, from a row node that packs its whole row into a single string:

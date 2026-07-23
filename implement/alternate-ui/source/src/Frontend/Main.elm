@@ -1425,7 +1425,7 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                     continueWithTitle
                         "Using the Alternate UI"
                         (displayMessageBoxes maybeInputRoute memoryReading.parsedUserInterface.messageBoxes
-                            ++ [ displayOrientation maybeInputRoute memoryReading.parsedUserInterface
+                            ++ [ displayOrientation maybeInputRoute memoryReading.typeHierarchy memoryReading.parsedUserInterface
                                , verticalSpacerFromHeightInEm 0.5
                                ]
                             ++ displayTutorialPointer memoryReading.parsedUserInterface
@@ -1867,11 +1867,14 @@ displayTextForNeocomButtonName name =
 This exists so the page answers "where am I and what now" on every refresh, without having to
 descend into the UI tree to find out.
 -}
-displayOrientation : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.ParsedUserInterface -> Html.Html Event
-displayOrientation maybeInputRouteConfig parsedUserInterface =
+displayOrientation : Maybe InputRouteConfig -> Dict.Dict String (List String) -> EveOnline.ParseUserInterface.ParsedUserInterface -> Html.Html Event
+displayOrientation maybeInputRouteConfig typeHierarchy parsedUserInterface =
     let
         maybeInputRoute =
             maybeInputRouteConfig |> Maybe.map inputRouteFromInputConfig
+
+        context =
+            viewContextFromInputRouteConfig maybeInputRouteConfig 3
 
         maybeLocationInfo =
             parsedUserInterface.infoPanelContainer
@@ -1910,6 +1913,68 @@ displayOrientation maybeInputRouteConfig parsedUserInterface =
                                     [ "Docked at: " ++ stationName ]
                     in
                     systemLine :: stationLines
+
+        {- The route the player has set, from the client's route info panel: the header with the
+           jump count, then the next system and the final destination -- each a control, since
+           the client's own panels answer a right-click with the travel menu. The client names
+           the roles itself, in the links' alt attributes; without them the two lines are
+           near-identical system-security-region runs. The per-jump markers between them carry
+           no text at all and are left out rather than presented as unlabeled stops.
+        -}
+        routeHtml =
+            case parsedUserInterface.infoPanelContainer |> Maybe.andThen .infoPanelRoute of
+                Nothing ->
+                    []
+
+                Just route ->
+                    let
+                        waypointEntry waypoint =
+                            if not (Frontend.View.Common.isVisible waypoint.uiNode) then
+                                Nothing
+
+                            else
+                                waypoint.text
+                                    |> Maybe.andThen EveOnline.ParseUserInterface.discardUnreadableText
+                                    |> Maybe.map
+                                        (\rawText ->
+                                            let
+                                                plainLine =
+                                                    Frontend.View.Common.plainText rawText
+
+                                                label =
+                                                    case EveOnline.ParseUserInterface.altTextFromMarkup rawText of
+                                                        Just role ->
+                                                            role ++ ": " ++ plainLine
+
+                                                        Nothing ->
+                                                            plainLine
+                                            in
+                                            Frontend.View.Common.control label waypoint.uiNode
+                                        )
+
+                        routeEntries =
+                            [ route.headerText
+                                |> Maybe.andThen EveOnline.ParseUserInterface.discardUnreadableText
+                                |> Maybe.map (Frontend.View.Common.plainText >> Frontend.View.Common.prose)
+                            , route.nextWaypoint |> Maybe.andThen waypointEntry
+                            , route.destination |> Maybe.andThen waypointEntry
+                            ]
+                                |> List.filterMap identity
+                    in
+                    if routeEntries == [] then
+                        []
+
+                    else
+                        [ Frontend.View.Common.actionList context routeEntries ]
+
+        --  Panels no specialized reading claims still render, through the same walk a window's
+        --  content goes through. Degrading over disappearing, as for the windows.
+        otherPanelsHtml =
+            parsedUserInterface.infoPanelContainer
+                |> Maybe.map .otherPanels
+                |> Maybe.withDefault []
+                |> List.filter Frontend.View.Common.isVisible
+                |> List.concatMap (Frontend.View.GenericWindow.panelBodyHtml typeHierarchy context)
 
         agentMissionEntries =
             parsedUserInterface.infoPanelContainer
@@ -1956,13 +2021,17 @@ displayOrientation maybeInputRouteConfig parsedUserInterface =
                             (infoHtml :: actionsHtml) |> Html.div []
                         )
     in
-    [ [ "Where you are" |> Html.text ] |> Html.h3 []
-    , locationLines
+    ([ [ "Where you are" |> Html.text ] |> Html.h3 []
+     , locationLines
         |> List.map (\line -> [ line |> Html.text ] |> Html.li [])
         |> Html.ul []
-    , [ "What the game is asking of you" |> Html.text ] |> Html.h3 []
-    , missionsHtml |> Html.div []
-    ]
+     ]
+        ++ routeHtml
+        ++ otherPanelsHtml
+        ++ [ [ "What the game is asking of you" |> Html.text ] |> Html.h3 []
+           , missionsHtml |> Html.div []
+           ]
+    )
         |> Html.div []
 
 
