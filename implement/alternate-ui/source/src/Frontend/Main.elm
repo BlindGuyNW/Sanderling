@@ -79,7 +79,22 @@ type alias State =
     , uiTreeView : UITreeViewState
     , selectedViewMode : ViewMode
     , parsedUITreeView : ParsedUITreeViewState
+    , tooltipInspection : TooltipInspectionState
     }
+
+
+{-| The Shift+F11 gesture: hover a node of the game client, then watch the following readings
+for the tooltip the client shows in response. Waiting is not open-ended -- an element with no
+tooltip would otherwise wait forever, so after a few readings the answer is "no tooltip".
+
+The result is kept until the next inspection so the answer can be read again by navigating to
+it, not only heard once from the live region announcement.
+
+-}
+type TooltipInspectionState
+    = NoTooltipInspection
+    | TooltipInspectionPending { beginTimeMilli : Int }
+    | TooltipInspectionCompleted { texts : List String }
 
 
 type alias ReadFromLiveProcessState =
@@ -208,6 +223,7 @@ init _ url navigationKey =
     , uiTreeView = { expandedNodes = [], focused = [] }
     , selectedViewMode = ViewAlternateUI
     , parsedUITreeView = { expandedNodes = [], focused = [] }
+    , tooltipInspection = NoTooltipInspection
     }
         |> update (UrlChange url)
 
@@ -415,6 +431,12 @@ update event stateBefore =
                                         clickLocation
                                         |> sequenceElements effectSequenceSpacingMilliseconds
 
+                                --  Parking the pointer is the whole effect: the game client
+                                --  shows the tooltip on its own once the pointer rests there.
+                                MouseHover ->
+                                    [ Common.EffectOnWindow.MouseMoveTo clickLocation ]
+                                        |> sequenceElements effectSequenceSpacingMilliseconds
+
                                 {- Setting a slider is a press-move-release rather than a click.
                                    The press already jumps the handle to the pressed position, but
                                    two plain clicks near the same spot in quick succession fall to
@@ -489,8 +511,18 @@ update event stateBefore =
                                 )
 
                         -- TODO: Remember sending input, to syncronize with get next reading.
+                        state =
+                            case sendInput.input of
+                                MouseHover ->
+                                    { stateBefore
+                                        | tooltipInspection =
+                                            TooltipInspectionPending { beginTimeMilli = stateBefore.timeMilli }
+                                    }
+
+                                _ ->
+                                    stateBefore
                     in
-                    ( stateBefore, requestSendInputToGameClient )
+                    ( state, requestSendInputToGameClient )
 
         UserInputFocusInUITree focusedPath ->
             let
@@ -870,6 +902,29 @@ integrateBackendResponse { request, result } stateBefore =
 
                 readFromLiveProcessBefore =
                     stateBefore.readFromLiveProcess
+
+                tooltipInspection =
+                    case stateBefore.tooltipInspection of
+                        TooltipInspectionPending pending ->
+                            case
+                                readMemoryResult
+                                    |> Result.toMaybe
+                                    |> Maybe.andThen (.memoryReading >> .parseResult >> Result.toMaybe)
+                            of
+                                Nothing ->
+                                    stateBefore.tooltipInspection
+
+                                Just parseSuccess ->
+                                    resolveTooltipInspection
+                                        { beginTimeMilli = pending.beginTimeMilli
+                                        , readingRequestTimeMilli =
+                                            readFromLiveProcessBefore.lastPendingRequestToReadFromGameClientTimeMilli
+                                                |> Maybe.withDefault stateBefore.timeMilli
+                                        }
+                                        parseSuccess
+
+                        other ->
+                            other
             in
             { stateBefore
                 | readFromLiveProcess =
@@ -877,6 +932,7 @@ integrateBackendResponse { request, result } stateBefore =
                         | readMemoryResult = Just readMemoryResult
                         , lastPendingRequestToReadFromGameClientTimeMilli = Nothing
                     }
+                , tooltipInspection = tooltipInspection
             }
 
         InterfaceToFrontendClient.RunInVolatileProcessRequest (EveOnline.VolatileProcessInterface.SearchUIRootAddress searchUIRootRequest) ->
@@ -938,6 +994,73 @@ integrateBackendResponse { request, result } stateBefore =
 
         _ ->
             stateBefore
+
+
+{-| Whether a reading settles a pending tooltip inspection.
+
+A reading requested before the hover had time to land -- the effect's own latency plus the
+client's delay before showing a tooltip -- can only show the state from before the gesture,
+including a leftover tooltip from wherever the pointer previously rested, so it neither confirms
+nor denies. From then on, the first reading with tooltip text answers the inspection. After a few
+seconds of readings without one, the answer is that the node has no tooltip: ending the wait is
+what keeps the page from promising a tooltip that is never coming. Readings arrive about once a
+second, so the thresholds are coarse on purpose.
+
+-}
+resolveTooltipInspection :
+    { beginTimeMilli : Int, readingRequestTimeMilli : Int }
+    -> ParseMemoryReadingSuccess
+    -> TooltipInspectionState
+resolveTooltipInspection { beginTimeMilli, readingRequestTimeMilli } parseSuccess =
+    if readingRequestTimeMilli < beginTimeMilli + 800 then
+        TooltipInspectionPending { beginTimeMilli = beginTimeMilli }
+
+    else
+        case tooltipTextsFromReading parseSuccess of
+            [] ->
+                if beginTimeMilli + 5000 < readingRequestTimeMilli then
+                    TooltipInspectionCompleted { texts = [] }
+
+                else
+                    TooltipInspectionPending { beginTimeMilli = beginTimeMilli }
+
+            texts ->
+                TooltipInspectionCompleted { texts = texts }
+
+
+{-| The texts of the tooltip panels a reading contains, in the order they are laid out.
+
+The panel is told by the `TooltipPanel` class in its inheritance chain, falling back to the type
+name itself for a reading that carries no hierarchy. Observed 2026-07-23: the multibuy window's
+price comparison tooltip is a `TooltipPanel` in the `l_menu` layer, a grid of label and value
+cells reading "Price per unit", "6.90 ISK", "Regional average 117.7%", ...
+
+-}
+tooltipTextsFromReading : ParseMemoryReadingSuccess -> List String
+tooltipTextsFromReading memoryReading =
+    memoryReading.parsedUserInterface.uiTree
+        |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+        |> List.filter
+            (\node ->
+                let
+                    typeName =
+                        node.uiNode.pythonObjectTypeName
+                in
+                Dict.get typeName memoryReading.typeHierarchy
+                    |> Maybe.withDefault [ typeName ]
+                    |> List.member "TooltipPanel"
+            )
+        |> List.filter Frontend.View.Common.isVisible
+        |> List.concatMap
+            (\panel ->
+                panel
+                    |> EveOnline.ParseUserInterface.getAllContainedDisplayTextsWithRegion
+                    |> List.map (\( text, textNode ) -> { uiNode = textNode, text = text })
+                    |> Frontend.View.Common.inReadingOrder
+                    |> List.filterMap (.text >> EveOnline.ParseUserInterface.discardUnreadableText)
+                    |> List.map Frontend.View.Common.plainText
+                    |> List.filter (String.isEmpty >> not)
+            )
 
 
 decideNextStepToReadFromLiveProcess :
@@ -1363,12 +1486,43 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
             continueWithTitle "Visualization of the UI tree" [ uiTreeSvg ]
     in
     [ selectViewModeHtml state
+    , tooltipInspectionHtml state.tooltipInspection
     , selectedViewHtml
         |> List.map (List.singleton >> Html.div [])
         |> Html.div []
     , visualSectionHtml |> Html.div []
     ]
         |> Html.div []
+
+
+{-| Where the answer to a Shift+F11 tooltip inspection arrives. A live region, so the answer is
+announced without moving the reader's position -- the gesture is pressed somewhere deep in the
+page, and yanking the reading position up here would cost more than the tooltip is worth. The
+element is present even while empty, because a live region only announces changes to a region
+that already existed. The last answer stays until the next inspection, so it can also be
+navigated to and read again.
+-}
+tooltipInspectionHtml : TooltipInspectionState -> Html.Html Event
+tooltipInspectionHtml inspection =
+    Html.div
+        [ HA.attribute "role" "status"
+        , HA.attribute "aria-atomic" "true"
+        ]
+        (case inspection of
+            NoTooltipInspection ->
+                []
+
+            TooltipInspectionPending _ ->
+                [ Html.text "Reading tooltip..." ]
+
+            TooltipInspectionCompleted { texts } ->
+                case texts of
+                    [] ->
+                        [ Html.text "No tooltip." ]
+
+                    _ ->
+                        [ Html.text ("Tooltip: " ++ String.join "; " texts) ]
+        )
 
 
 viewContextFromInputRouteConfig : Maybe InputRouteConfig -> Int -> Frontend.View.Common.Context Event
@@ -1617,7 +1771,10 @@ displayNeocom maybeInputRouteConfig neocom =
 
                             Just inputRoute ->
                                 [ [ displayTextForNeocomButtonName button.name |> Html.text ]
-                                    |> Html.button [ HE.onClick (inputRoute button.uiNode MouseClickLeft) ]
+                                    |> Html.button
+                                        [ HE.onClick (inputRoute button.uiNode MouseClickLeft)
+                                        , Frontend.View.Common.tooltipGestureAttribute inputRoute button.uiNode
+                                        ]
                                 ]
                         )
                             |> Html.li [ HA.style "margin" "0.2em 0" ]
@@ -1784,7 +1941,9 @@ displayOrientation maybeInputRouteConfig parsedUserInterface =
                                                     (\action ->
                                                         [ [ action.text |> Html.text ]
                                                             |> Html.button
-                                                                [ HE.onClick (inputRoute action.uiNode MouseClickLeft) ]
+                                                                [ HE.onClick (inputRoute action.uiNode MouseClickLeft)
+                                                                , Frontend.View.Common.tooltipGestureAttribute inputRoute action.uiNode
+                                                                ]
                                                         ]
                                                             |> Html.li [ HA.style "margin" "0.2em 0" ]
                                                     )
@@ -1928,7 +2087,10 @@ contextMenuEntryHtml maybeInputRoute menuEntry =
 
         Just inputRoute ->
             Html.button
-                (HE.onClick (inputRoute menuEntry.uiNode MouseClickLeft) :: stateAttributes)
+                (HE.onClick (inputRoute menuEntry.uiNode MouseClickLeft)
+                    :: Frontend.View.Common.tooltipGestureAttribute inputRoute menuEntry.uiNode
+                    :: stateAttributes
+                )
                 [ menuEntry.text |> Html.text ]
     ]
         |> Html.div []

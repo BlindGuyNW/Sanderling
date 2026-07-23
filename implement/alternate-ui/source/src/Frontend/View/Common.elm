@@ -21,6 +21,7 @@ module Frontend.View.Common exposing
     , textFieldControl
     , textLines
     , toggleControl
+    , tooltipGestureAttribute
     )
 
 {-| The building blocks every view of the game client is made of.
@@ -243,7 +244,9 @@ A click sends a left-click to the node; the context-menu gesture -- the Applicat
 right mouse click -- sends a right-click when `canMenu`. This is the browser's own pairing of
 Enter and Shift+F10 on any focusable element, so the whole control is one stop rather than a label
 followed by separate "Activate" and "Menu" buttons. `preventDefaultOn` suppresses the browser's
-own context menu so the game gets the right-click instead.
+own context menu so the game gets the right-click instead. Shift+F11 is the third per-element
+gesture, `tooltipGestureAttribute`: hover the node so the client shows its tooltip, which the
+page then announces.
 
 Without an input route -- a reading loaded from a file -- it is the plain label, so a saved reading
 still reads, only without anything to press.
@@ -283,6 +286,7 @@ controlElementForInput maybeInputRoute label node canMenu checkState activateInp
         Just inputRoute ->
             Html.button
                 (HE.onClick (inputRoute node activateInput)
+                    :: tooltipGestureAttribute inputRoute node
                     :: (if canMenu then
                             [ HE.preventDefaultOn "contextmenu"
                                 (Json.Decode.succeed ( inputRoute node MouseClickRight, True ))
@@ -328,6 +332,34 @@ entryHtml context entry =
                     ( Nothing, Nothing ) ->
                         controlElementForInput context.inputRoute entry.label target.node target.canMenu entry.checkState target.activate
         ]
+
+
+{-| Shift+F11 on a focused control hovers its node in the game client, which makes the client
+show the node's tooltip for the page to announce. The keys with a per-element meaning in a screen
+reader's browse mode are only the ones the browser itself routes to the focused element -- Enter,
+and Shift+F10 for the context menu -- so a third verb has to ride on a key combination that
+neither the screen reader nor the browser has a binding for. Shift+F11 is such a key: F11 alone
+is the browser's fullscreen toggle, shifted it is free, and NVDA's browse mode has no gesture on
+it. A decoder that fails on every other key leaves those keys to their usual meaning.
+-}
+tooltipGestureDecoder : InputRoute event -> UITreeNodeWithDisplayRegion -> Json.Decode.Decoder ( event, Bool )
+tooltipGestureDecoder inputRoute node =
+    Json.Decode.map2 Tuple.pair
+        (Json.Decode.field "key" Json.Decode.string)
+        (Json.Decode.field "shiftKey" Json.Decode.bool)
+        |> Json.Decode.andThen
+            (\( key, shiftKey ) ->
+                if key == "F11" && shiftKey then
+                    Json.Decode.succeed ( inputRoute node MouseHover, True )
+
+                else
+                    Json.Decode.fail "not the tooltip gesture"
+            )
+
+
+tooltipGestureAttribute : InputRoute event -> UITreeNodeWithDisplayRegion -> Html.Attribute event
+tooltipGestureAttribute inputRoute node =
+    HE.preventDefaultOn "keydown" (tooltipGestureDecoder inputRoute node)
 
 
 {-| A slider of the game client, as the `role="slider"` element a screen reader expects: it
@@ -393,7 +425,8 @@ sliderElement maybeInputRoute label percent node =
                 , HA.attribute "aria-valuemax" "100"
                 , HA.attribute "aria-valuenow" (String.fromInt percent)
                 , HA.attribute "aria-valuetext" (String.fromInt percent ++ " %")
-                , HE.preventDefaultOn "keydown" keyDecoder
+                , HE.preventDefaultOn "keydown"
+                    (Json.Decode.oneOf [ tooltipGestureDecoder inputRoute node, keyDecoder ])
                 ]
                 [ Html.text labelWithValue ]
 
@@ -449,7 +482,8 @@ textFieldElement maybeInputRoute label currentText node =
                 [ HA.type_ "text"
                 , HA.attribute "aria-label" label
                 , HA.attribute "value" (currentText |> Maybe.withDefault "")
-                , HE.preventDefaultOn "keydown" enterKeyDecoder
+                , HE.preventDefaultOn "keydown"
+                    (Json.Decode.oneOf [ tooltipGestureDecoder inputRoute node, enterKeyDecoder ])
                 ]
                 []
 

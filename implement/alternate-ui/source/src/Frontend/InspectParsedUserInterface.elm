@@ -50,6 +50,13 @@ type InputOnUINode
          the market window's search field.
       -}
     | TypeTextIntoField String
+      {- Park the game client's pointer on the node without pressing anything, so the client
+         shows the node's tooltip. The tooltip then turns up in a following reading as ordinary
+         nodes; measured against a live client 2026-07-23 on the multibuy window's price
+         comparison. What makes this worth a posted message: the tooltip panels are the only
+         place the client explains many of its numbers.
+      -}
+    | MouseHover
 
 
 type ParsedUITreeViewPathNode
@@ -116,6 +123,9 @@ displayTextForInputKind inputKind =
 
         TypeTextIntoField _ ->
             "typetext"
+
+        MouseHover ->
+            "hover"
 
 
 renderTreeNodeFromParsedUserInterface :
@@ -1727,7 +1737,7 @@ treeViewNodeFromMemoryReadingUITreeNode maybeInputRoute uiNodesWithDisplayRegion
             maybeNodeWithDisplayRegion
                 |> Maybe.map
                     (\nodeWithDisplayRegion ->
-                        maybeInputOfferHtml maybeInputRoute [ MouseClickLeft, MouseClickRight ] nodeWithDisplayRegion
+                        maybeInputOfferHtml maybeInputRoute [ MouseClickLeft, MouseClickRight, MouseHover ] nodeWithDisplayRegion
                     )
                 |> Maybe.withDefault (Html.text "")
 
