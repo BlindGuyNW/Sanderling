@@ -1090,7 +1090,19 @@ parseContextMenusFromUITreeRoot uiTreeRoot =
         Just layerMenu ->
             layerMenu
                 |> listChildrenWithDisplayRegion
-                |> List.filter (.uiNode >> .pythonObjectTypeName >> String.toLower >> String.contains "menu")
+                |> List.filter
+                    (\child ->
+                        (child.uiNode.pythonObjectTypeName |> String.toLower |> String.contains "menu")
+                            || --  A combo box opens its options into this layer too, as a plain
+                               --  `Container` holding `ComboEntry` rows. Without this it renders
+                               --  nowhere at all: it is no window, and its type says nothing.
+                               --  Observed on the settings window's Display Mode combo,
+                               --  2026-07-23.
+                               (child
+                                    |> listDescendantsWithDisplayRegion
+                                    |> List.any (.uiNode >> .pythonObjectTypeName >> (==) "ComboEntry")
+                               )
+                    )
                 |> List.map parseContextMenu
 
 
@@ -1382,7 +1394,15 @@ parseContextMenu contextMenuUINode =
         entriesUINodes =
             contextMenuUINode
                 |> listDescendantsWithDisplayRegion
-                |> List.filter (.uiNode >> .pythonObjectTypeName >> String.toLower >> String.contains "menuentry")
+                |> List.filter
+                    (\descendant ->
+                        (descendant.uiNode.pythonObjectTypeName |> String.toLower |> String.contains "menuentry")
+                            || --  The rows of an open combo box; each carries its label in a
+                               --  `TextBody` child, and clicking one selects it and closes the
+                               --  combo. No marker distinguishes the current selection -- the
+                               --  combo control itself reads its current value.
+                               (descendant.uiNode.pythonObjectTypeName == "ComboEntry")
+                    )
 
         entries =
             entriesUINodes
