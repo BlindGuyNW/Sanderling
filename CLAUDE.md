@@ -93,20 +93,24 @@ before adding or changing a view.
 
 **Parsing fixes are driven by user-reported samples.** The recurring change shape (e.g. commit `d2ffa5b`) is: a player reports the client showing a form the parser doesn't handle → adjust the parse function in `ParseUserInterface.elm` → add the exact observed string as a case in `tests/ParseMemoryReadingTest.elm`, with a comment giving the date and the forum/session-recording source. Follow that comment convention; the existing cases document real client variations (thousands separators `. , space ’ '`, localized modifier keys `STRG`/`UMSCH`, both `<url=…>` and `<a href=…>` markup) and must not be regressed.
 
+**Hidden means alpha, not absence.** The client often hides UI by making it transparent while leaving the nodes in the tree: `SelectionIndicatorLine` by color alpha, the notification badge and its settings button by `_opacity` ≈ 0. A region-only visibility check therefore announces invisible controls, and clicking one hits whatever is underneath. Gate on `_opacity` / color alpha too — see `subtreeShowsSelectionIndicator` and `parseNotificationsWidget`.
+
 **Input to the game client.** `VolatileProcess.csx` has two ways to deliver an effect, chosen by the request's `bringWindowToForeground` flag:
 
 - `true` — the legacy path: `Sanderling.Motor.WindowMotor` + `InputSimulator`, which calls `SetForegroundWindow` and moves the real cursor. This steals keyboard focus, which makes the alternate UI unusable alongside a screen reader.
 - `false` — `InputViaWindowMessages`, which posts `WM_MOUSE*` / `WM_KEY*` straight to the window. No focus change and no cursor motion. This is what the frontend uses.
 
-Three non-obvious constraints on the message path, all established by measuring against a live client — do not "simplify" them away:
+Five non-obvious constraints on the message path, all established by measuring against a live client — do not "simplify" them away:
 
 1. Mouse messages are processed **only while the real cursor is physically inside the window's client area**. Focus is irrelevant, cursor geometry is not; parked on the title bar or window border, every click is silently dropped. `EnsureCursorInsideClientArea` handles this and is a no-op in the common case. Keyboard is *not* subject to this.
 2. A button-down posted immediately after a move is discarded — the client hit-tests against the pointer position from its previous frame. 0 ms fails; ≥60 ms works. The wait lives in the `.csx`, not in the caller, because `effectSequenceSpacingMilliseconds` in `Frontend/Main.elm` is only 30 ms.
 3. The client derives the typed character from `WM_KEYDOWN` itself, so **do not also post `WM_CHAR`** — every character is entered twice.
+4. Drags (sliders, item moves) are press → midpoint move → release with ~150 ms between steps; a plain posted click on a slider handle is eaten by the client's double-click filtering.
+5. A posted Escape does not close a context menu — a click elsewhere does.
 
-A minimized client cannot be driven at all, and `ShowWindow(SW_SHOWNOACTIVATE)` restores it but still pulls the foreground; that path is unsolved.
+A minimized client cannot be driven at all, and `ShowWindow(SW_SHOWNOACTIVATE)` restores it but still pulls the foreground; that path is unsolved. A few controls never respond to posted input at all (measured 2026-07-23: the notification entry's ✕ ignores every click variant while the buttons beside it work) — when a control ignores clicks that demonstrably land elsewhere, look for a right-click-menu route to the same action instead.
 
-**Debugging effects without the browser.** `tools/AlternateUiApi.ps1` and `tools/GameWindowProbe.ps1` package this up — dot-source the first to read the live tree and send input, and run the second when input mysteriously stops working (it checks for a minimized window and a cursor outside the client area, the two conditions that silently drop input while the tree keeps reading fine):
+**Debugging effects without the browser.** `tools/AlternateUiApi.ps1` and `tools/GameWindowProbe.ps1` package this up — dot-source the first to read the live tree and send input, and run the second when input mysteriously stops working (it checks for a minimized window and a cursor outside the client area, the two conditions that silently drop input while the tree keeps reading fine). `tools/GameWindowScreenshot.ps1` captures the client window to PNG via PrintWindow — works while occluded, and pixel coordinates match tree regions, so it settles "is this actually drawn?" questions the reading alone cannot:
 
 ```powershell
 . ./tools/AlternateUiApi.ps1
