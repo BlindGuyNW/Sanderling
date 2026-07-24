@@ -664,6 +664,30 @@ type alias StandaloneBookmarkWindow =
 type alias LayerAbovemain =
     { uiNode : UITreeNodeWithDisplayRegion
     , quickMessage : Maybe QuickMessage
+    , notificationsWidget : Maybe NotificationsWidget
+    }
+
+
+{-| The notification widget parked at the bottom right of the screen: a bell button, a badge
+counting the unread notifications, and — while the player has the history expanded — the recent
+notifications themselves. Structure observed 2026-07-23, docked, with four notifications:
+`l_abovemain` holds `NotificationPopupContainer`, `BadgeMasterContainer` and
+`NotificationContainer` as siblings.
+-}
+type alias NotificationsWidget =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , unreadCountText : Maybe String
+    , buttons : List UITreeNodeWithDisplayRegion
+    , entries : List NotificationsWidgetEntry
+    }
+
+
+type alias NotificationsWidgetEntry =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , subjectText : Maybe String
+    , subtextText : Maybe String
+    , timeText : Maybe String
+    , closeButton : Maybe UITreeNodeWithDisplayRegion
     }
 
 
@@ -1133,38 +1157,49 @@ asUITreeNodeWithInheritedOffset inheritedOffset { occludedRegions } rawNode =
 
 getDisplayRegionFromDictEntries : EveOnline.MemoryReading.UITreeNode -> Maybe DisplayRegion
 getDisplayRegionFromDictEntries uiNode =
-    let
-        fixedNumberFromJsonValue =
-            Json.Decode.decodeValue
-                (Json.Decode.oneOf
-                    [ jsonDecodeIntFromIntOrString
-                    , Json.Decode.field "int_low32" jsonDecodeIntFromIntOrString
-                    ]
-                )
-
-        fixedNumberFromPropertyName : String -> Maybe Int
-        fixedNumberFromPropertyName propertyName =
-            case Dict.get propertyName uiNode.dictEntriesOfInterest of
-                Just jsonValue ->
-                    case fixedNumberFromJsonValue jsonValue of
-                        Ok number ->
-                            Just number
-
-                        Err _ ->
-                            Nothing
-
-                Nothing ->
-                    Nothing
-    in
     case
-        ( ( fixedNumberFromPropertyName "_displayX", fixedNumberFromPropertyName "_displayY" )
-        , ( fixedNumberFromPropertyName "_displayWidth", fixedNumberFromPropertyName "_displayHeight" )
+        ( ( getFixedNumberFromDictEntries "_displayX" uiNode, getFixedNumberFromDictEntries "_displayY" uiNode )
+        , ( getFixedNumberFromDictEntries "_displayWidth" uiNode, getFixedNumberFromDictEntries "_displayHeight" uiNode )
         )
     of
         ( ( Just displayX, Just displayY ), ( Just displayWidth, Just displayHeight ) ) ->
             Just { x = displayX, y = displayY, width = displayWidth, height = displayHeight }
 
         _ ->
+            Nothing
+
+
+{-| The static layout values, for a node whose animated `_display*` values are absent. The only
+place known to need this is the notification history's entries — see `parseNotificationsWidget`.
+-}
+getDisplayRegionFromLeftTopDictEntries : EveOnline.MemoryReading.UITreeNode -> Maybe DisplayRegion
+getDisplayRegionFromLeftTopDictEntries uiNode =
+    case
+        ( ( getFixedNumberFromDictEntries "_left" uiNode, getFixedNumberFromDictEntries "_top" uiNode )
+        , ( getFixedNumberFromDictEntries "_width" uiNode, getFixedNumberFromDictEntries "_height" uiNode )
+        )
+    of
+        ( ( Just left, Just top ), ( Just width, Just height ) ) ->
+            Just { x = left, y = top, width = width, height = height }
+
+        _ ->
+            Nothing
+
+
+getFixedNumberFromDictEntries : String -> EveOnline.MemoryReading.UITreeNode -> Maybe Int
+getFixedNumberFromDictEntries propertyName uiNode =
+    case Dict.get propertyName uiNode.dictEntriesOfInterest of
+        Just jsonValue ->
+            jsonValue
+                |> Json.Decode.decodeValue
+                    (Json.Decode.oneOf
+                        [ jsonDecodeIntFromIntOrString
+                        , Json.Decode.field "int_low32" jsonDecodeIntFromIntOrString
+                        ]
+                    )
+                |> Result.toMaybe
+
+        Nothing ->
             Nothing
 
 
@@ -4014,7 +4049,140 @@ parseLayerAbovemainFromUITreeRoot uiTreeRoot =
             Just
                 { uiNode = layerAboveMainUINode
                 , quickMessage = parseQuickMessage layerAboveMainUINode
+                , notificationsWidget = parseNotificationsWidget layerAboveMainUINode
                 }
+
+
+{-| The notification widget at the bottom right. The unread-count badge is a sibling of the
+widget node (`BadgeMasterContainer`), and the client hides it by opacity rather than by removing
+it — observed 2026-07-23: opacity ~1 while the history is collapsed, ~0 while it is expanded.
+The same alpha-hiding as `subtreeShowsSelectionIndicator` treats.
+-}
+parseNotificationsWidget : UITreeNodeWithDisplayRegion -> Maybe NotificationsWidget
+parseNotificationsWidget layerAboveMainUINode =
+    case
+        layerAboveMainUINode
+            |> listDescendantsWithDisplayRegion
+            |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "NotificationContainer")
+            |> List.head
+    of
+        Nothing ->
+            Nothing
+
+        Just widgetUINode ->
+            let
+                unreadCountText =
+                    layerAboveMainUINode
+                        |> listDescendantsWithDisplayRegion
+                        |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "BadgeMasterContainer")
+                        |> List.concatMap listDescendantsWithDisplayRegion
+                        |> List.filter
+                            (.uiNode
+                                >> getOpacityFloatFromDictEntries
+                                >> Maybe.map (\opacity -> 0.5 < opacity)
+                                >> Maybe.withDefault True
+                            )
+                        |> List.concatMap (.uiNode >> getAllContainedDisplayTexts)
+                        |> List.filterMap discardUnreadableText
+                        |> List.head
+
+                {-
+                   The settings button stays built after the history's first expansion, parked
+                   over the bell and alpha-hidden while collapsed (opacity ~0, observed
+                   2026-07-23) — without the opacity gate it would be offered while invisible,
+                   and its click would land on the bell.
+                -}
+                buttons =
+                    widgetUINode
+                        |> listDescendantsWithDisplayRegion
+                        |> List.filter (.uiNode >> getNameFromDictEntries >> (==) (Just "buttonControlContainer"))
+                        |> List.concatMap listChildrenWithDisplayRegion
+                        |> List.filter (.uiNode >> .pythonObjectTypeName >> String.contains "Button")
+                        |> List.filter
+                            (.uiNode
+                                >> getOpacityFloatFromDictEntries
+                                >> Maybe.map (\opacity -> 0.5 < opacity)
+                                >> Maybe.withDefault True
+                            )
+
+                {-
+                   A NotificationEntry node carries no `_displayX`/`_displayY` — only `_left` and
+                   `_top` — so the region walk turns it into a ChildWithoutRegion and its whole
+                   subtree falls out of `listDescendantsWithDisplayRegion`. Observed 2026-07-23 on
+                   all four entries of an expanded history. The raw tree still holds them, so the
+                   region-less ones are rebuilt here from `_left`/`_top`/`_width`/`_height`,
+                   offset from their regioned parent; the nodes below an entry carry ordinary
+                   `_display*` values, so the standard walk resumes from the entry down.
+                -}
+                rebuiltEntryNodes =
+                    (widgetUINode :: listDescendantsWithDisplayRegion widgetUINode)
+                        |> List.concatMap
+                            (\parent ->
+                                parent.uiNode.children
+                                    |> Maybe.withDefault []
+                                    |> List.map EveOnline.MemoryReading.unwrapUITreeNodeChild
+                                    |> List.filter (.pythonObjectTypeName >> (==) "NotificationEntry")
+                                    |> List.filter (getDisplayRegionFromDictEntries >> (==) Nothing)
+                                    |> List.filterMap
+                                        (\rawEntry ->
+                                            rawEntry
+                                                |> getDisplayRegionFromLeftTopDictEntries
+                                                |> Maybe.map
+                                                    (\selfRegion ->
+                                                        asUITreeNodeWithDisplayRegion
+                                                            { selfDisplayRegion = selfRegion
+                                                            , totalDisplayRegion =
+                                                                { x = parent.totalDisplayRegion.x + selfRegion.x
+                                                                , y = parent.totalDisplayRegion.y + selfRegion.y
+                                                                , width = selfRegion.width
+                                                                , height = selfRegion.height
+                                                                }
+                                                            , occludedRegions = []
+                                                            }
+                                                            rawEntry
+                                                    )
+                                        )
+                            )
+
+                entries =
+                    ((widgetUINode
+                        |> listDescendantsWithDisplayRegion
+                        |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "NotificationEntry")
+                     )
+                        ++ rebuiltEntryNodes
+                    )
+                        |> List.map parseNotificationsWidgetEntry
+            in
+            Just
+                { uiNode = widgetUINode
+                , unreadCountText = unreadCountText
+                , buttons = buttons
+                , entries = entries
+                }
+
+
+parseNotificationsWidgetEntry : UITreeNodeWithDisplayRegion -> NotificationsWidgetEntry
+parseNotificationsWidgetEntry entryUINode =
+    let
+        descendantNamed name =
+            entryUINode
+                |> listDescendantsWithDisplayRegion
+                |> List.filter (.uiNode >> getNameFromDictEntries >> (==) (Just name))
+                |> List.head
+
+        textFromDescendantNamed name =
+            descendantNamed name
+                |> Maybe.map (.uiNode >> getAllContainedDisplayTexts)
+                |> Maybe.withDefault []
+                |> List.filterMap discardUnreadableText
+                |> List.head
+    in
+    { uiNode = entryUINode
+    , subjectText = textFromDescendantNamed "notificationSubjectLabel"
+    , subtextText = textFromDescendantNamed "notificationSubtextLabel"
+    , timeText = textFromDescendantNamed "timeLabel"
+    , closeButton = descendantNamed "closeButton"
+    }
 
 
 parseQuickMessage : UITreeNodeWithDisplayRegion -> Maybe QuickMessage

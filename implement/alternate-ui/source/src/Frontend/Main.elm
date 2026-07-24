@@ -1471,6 +1471,7 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                                ]
                             ++ displayInventoryMoveActions maybeInputRoute memoryReading.parsedUserInterface
                             ++ displayOtherWindows maybeInputRoute memoryReading.typeHierarchy memoryReading.parsedUserInterface
+                            ++ displayNotificationsWidget maybeInputRoute memoryReading.parsedUserInterface
                         )
 
                 ViewUITree ->
@@ -1694,6 +1695,115 @@ displayOtherWindows maybeInputRouteConfig typeHierarchy parsedUserInterface =
                 windows |> List.map (Frontend.View.GenericWindow.view typeHierarchy contextForContent)
             )
         ]
+
+
+{-| The notification widget at the bottom right of the screen: the unread-count badge, the bell,
+and — while the player has the history expanded — the recent notifications. Before this section
+the badge's count reached a screen reader only through the SVG visualization at the bottom of the
+page, as a bare number with nothing saying what it counted.
+
+Each notification is one control — clicking it opens what it refers to (verified 2026-07-23: a
+kill-report entry opened the kill report window), and right-click opens the client's menu for it
+(Mark as Read, Turn off history visibility, Turn off popup), which lands in the context-menus
+section like any other menu.
+
+The entry's own ✕ close button is deliberately NOT offered: posted clicks on it do nothing.
+Measured 2026-07-23 against a live client — plain click, click after a 400 ms hover dwell, and
+press-jiggle-release all left the entry in place, while the same posted hover visibly faded the
+✕ in and the probe reported input deliverable; the bell and the entries accept the same clicks.
+Whatever that button requires, the message path does not provide it, and a Dismiss button that
+does nothing is worse than none.
+
+The history panel closes when the client processes a click anywhere outside it, so it may be
+gone again by the next reading after any other control is pressed.
+
+-}
+displayNotificationsWidget : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.ParsedUserInterface -> List (Html.Html Event)
+displayNotificationsWidget maybeInputRouteConfig parsedUserInterface =
+    case parsedUserInterface.layerAbovemain |> Maybe.andThen .notificationsWidget of
+        Nothing ->
+            []
+
+        Just widget ->
+            let
+                context =
+                    viewContextFromInputRouteConfig maybeInputRouteConfig 3
+
+                countEntries =
+                    case widget.unreadCountText of
+                        Nothing ->
+                            []
+
+                        Just count ->
+                            [ Frontend.View.Common.prose (count ++ " unread") ]
+
+                buttonEntries =
+                    widget.buttons
+                        |> List.filter Frontend.View.Common.isVisible
+                        |> Frontend.View.Common.nodesInReadingOrder
+                        |> List.map
+                            (\buttonNode ->
+                                Frontend.View.Common.controlActivateOnly
+                                    (Frontend.View.Common.labelForControl notificationsWidgetName buttonNode)
+                                    buttonNode
+                            )
+
+                entryEntries =
+                    widget.entries
+                        |> List.filter (.uiNode >> Frontend.View.Common.isVisible)
+                        |> Frontend.View.Common.inReadingOrder
+                        |> List.concatMap notificationEntryItems
+            in
+            [ Frontend.View.Common.section
+                context
+                "Notifications"
+                (\contextForContent ->
+                    [ Frontend.View.Common.actionList contextForContent
+                        (countEntries ++ buttonEntries ++ entryEntries)
+                    ]
+                )
+            , verticalSpacerFromHeightInEm 0.5
+            ]
+
+
+notificationEntryItems : EveOnline.ParseUserInterface.NotificationsWidgetEntry -> List Frontend.View.Common.Entry
+notificationEntryItems entry =
+    let
+        subject =
+            entry.subjectText
+                |> Maybe.map Frontend.View.Common.plainText
+                |> Maybe.withDefault "Notification"
+
+        label =
+            case entry.timeText of
+                Nothing ->
+                    subject
+
+                Just time ->
+                    subject ++ ", " ++ Frontend.View.Common.plainText time
+    in
+    Frontend.View.Common.control label entry.uiNode
+        :: (case entry.subtextText of
+                Nothing ->
+                    []
+
+                Just subtext ->
+                    [ Frontend.View.Common.prose (Frontend.View.Common.plainText subtext) ]
+           )
+
+
+{-| CONVENTIONS.md rule 4: the bell carries no `_hint` and no text, so its name is translated by
+hand. Observed 2026-07-23, docked; the settings button next to it supplies its own hint
+("Notification Settings") and stays off this table.
+-}
+notificationsWidgetName : String -> Maybe String
+notificationsWidgetName name =
+    case name of
+        "WidgetIcon" ->
+            Just "Show or hide recent notifications"
+
+        _ ->
+            Nothing
 
 
 {-| Moving an item between inventory containers is drag and drop in the game client -- it offers
