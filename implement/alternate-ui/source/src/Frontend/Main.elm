@@ -1470,6 +1470,7 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                                , verticalSpacerFromHeightInEm 0.5
                                ]
                             ++ displayInventoryMoveActions maybeInputRoute memoryReading.parsedUserInterface
+                            ++ displaySkillQueueReorderActions maybeInputRoute memoryReading.parsedUserInterface
                             ++ displayOtherWindows maybeInputRoute memoryReading.typeHierarchy memoryReading.parsedUserInterface
                             ++ displayNotificationsWidget maybeInputRoute memoryReading.parsedUserInterface
                         )
@@ -1975,6 +1976,202 @@ displayInventoryMoveActions maybeInputRouteConfig parsedUserInterface =
             context
             "Moving items"
             (\contextForContent -> [ Frontend.View.Common.actionList contextForContent moveEntries ])
+        , verticalSpacerFromHeightInEm 0.5
+        ]
+
+
+{-| Reordering the skill queue is drag and drop in the game client -- the entry's right-click
+menu covers every other queue operation, but not moving an entry -- so the page offers each move
+as a button, the same way the inventory offers item moves. Additive on top of the generic shell,
+which renders the Skill Planner itself.
+
+Drop semantics measured against a live client 2026-07-24, Skill Planner docked, three entries in
+the queue:
+
+  - A drop with the pointer over a queue row inserts the dragged entry BEFORE that row, in both
+    drag directions.
+  - A drop in the open space below the last row moves the dragged entry to the end. The client's
+    own `SkillQueueLastDropEntry` -- a 2 px slot after the last row -- did not take a drop aimed
+    at its exact coordinates; a point 20 px below the last row does.
+
+So moving an entry up one place drops it on the row above, and moving it down one place drops it
+on the row two below -- or below the last row, when no such row exists. "Move to top" and "move
+to end" are offered only where they differ from those.
+
+The end-of-queue drop is offered only while the `SkillQueueLastDropEntry` is visible: that slot
+only sits after the queue's true last row, so its visibility is the client's own statement that
+the row above it is the last one, rather than the last one scrolled into view.
+
+-}
+displaySkillQueueReorderActions : Maybe InputRouteConfig -> EveOnline.ParseUserInterface.ParsedUserInterface -> List (Html.Html Event)
+displaySkillQueueReorderActions maybeInputRouteConfig parsedUserInterface =
+    let
+        context =
+            viewContextFromInputRouteConfig maybeInputRouteConfig 3
+
+        maximumRowsOffered =
+            12
+
+        {- One queue is the visible rows sharing a parent node, so if the client ever shows two
+           queues at once, each reorders within itself instead of computing drop points across
+           windows.
+        -}
+        collectQueues node =
+            let
+                children =
+                    EveOnline.ParseUserInterface.listChildrenWithDisplayRegion node
+
+                rows =
+                    children
+                        |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "SkillQueueSkillEntry")
+            in
+            if List.isEmpty rows then
+                children |> List.concatMap collectQueues
+
+            else
+                [ { parent = node
+                  , rows =
+                        rows
+                            |> List.filter Frontend.View.Common.isVisible
+                            |> List.sortBy (.totalDisplayRegion >> .y)
+                  , lastDropSlot =
+                        children
+                            |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "SkillQueueLastDropEntry")
+                            |> List.filter Frontend.View.Common.isVisible
+                            |> List.head
+                  }
+                ]
+
+        --  The row's own texts, leftmost first: the skill name and level, then the time left.
+        rowLabel row =
+            row
+                |> EveOnline.ParseUserInterface.getAllContainedDisplayTextsWithRegion
+                |> List.sortBy (Tuple.second >> .totalDisplayRegion >> .x)
+                |> List.head
+                |> Maybe.map (Tuple.first >> Frontend.View.Common.plainText)
+                |> Maybe.withDefault "unnamed entry"
+
+        reorderEntry row verb dropLocation =
+            { label = "Move " ++ rowLabel row ++ " " ++ verb
+            , target =
+                Just
+                    { node = row
+                    , canMenu = False
+                    , activate = MouseDragTo dropLocation
+                    }
+            , checkState = Nothing
+            , sliderPercent = Nothing
+            , fieldText = Nothing
+            }
+
+        dropOnRow targetRow =
+            EveOnline.ParseUserInterface.centerFromDisplayRegion targetRow.totalDisplayRegionVisible
+
+        entriesForQueue queue =
+            let
+                rowCount =
+                    List.length queue.rows
+
+                rowAtIndex index =
+                    queue.rows |> List.drop index |> List.head
+
+                {- Kept within the parent's visible region: with the measured 20 px slack the
+                   drop can otherwise land past the bottom of a scrolled queue's viewport.
+                -}
+                dropBelowLastRow =
+                    case ( queue.lastDropSlot, queue.rows |> List.drop (rowCount - 1) |> List.head ) of
+                        ( Just _, Just lastRow ) ->
+                            let
+                                parentBottom =
+                                    queue.parent.totalDisplayRegionVisible.y
+                                        + queue.parent.totalDisplayRegionVisible.height
+
+                                dropY =
+                                    lastRow.totalDisplayRegionVisible.y
+                                        + lastRow.totalDisplayRegionVisible.height
+                                        + 20
+                            in
+                            if parentBottom < dropY then
+                                Nothing
+
+                            else
+                                Just
+                                    { x = (EveOnline.ParseUserInterface.centerFromDisplayRegion lastRow.totalDisplayRegionVisible).x
+                                    , y = dropY
+                                    }
+
+                        _ ->
+                            Nothing
+
+                entriesForRow ( rowIndex, row ) =
+                    --  List.drop with a negative count keeps the whole list, so an unguarded
+                    --  index - 1 hands the first row itself back as its "row above".
+                    [ if 1 <= rowIndex then
+                        rowAtIndex (rowIndex - 1)
+                            |> Maybe.map (\rowAbove -> reorderEntry row "up" (dropOnRow rowAbove))
+
+                      else
+                        Nothing
+                    , if rowIndex + 2 <= rowCount - 1 then
+                        rowAtIndex (rowIndex + 2)
+                            |> Maybe.map (\rowBelowNext -> reorderEntry row "down" (dropOnRow rowBelowNext))
+
+                      else if rowIndex == rowCount - 2 then
+                        dropBelowLastRow |> Maybe.map (reorderEntry row "down")
+
+                      else
+                        Nothing
+                    , if 2 <= rowIndex then
+                        rowAtIndex 0
+                            |> Maybe.map (\firstRow -> reorderEntry row "to top" (dropOnRow firstRow))
+
+                      else
+                        Nothing
+                    , if rowIndex <= rowCount - 3 then
+                        dropBelowLastRow |> Maybe.map (reorderEntry row "to end")
+
+                      else
+                        Nothing
+                    ]
+                        |> List.filterMap identity
+
+                offeredRows =
+                    queue.rows |> List.take maximumRowsOffered
+
+                cutoffEntries =
+                    if rowCount <= maximumRowsOffered then
+                        []
+
+                    else
+                        [ Frontend.View.Common.prose
+                            (String.fromInt (rowCount - maximumRowsOffered)
+                                ++ " further queue entries are not offered here."
+                            )
+                        ]
+            in
+            if rowCount < 2 then
+                []
+
+            else
+                (offeredRows
+                    |> List.indexedMap Tuple.pair
+                    |> List.concatMap entriesForRow
+                )
+                    ++ cutoffEntries
+
+        reorderEntries =
+            parsedUserInterface.uiTree
+                |> collectQueues
+                |> List.concatMap entriesForQueue
+    in
+    if List.isEmpty reorderEntries then
+        []
+
+    else
+        [ Frontend.View.Common.section
+            context
+            "Reordering the skill queue"
+            (\contextForContent -> [ Frontend.View.Common.actionList contextForContent reorderEntries ])
         , verticalSpacerFromHeightInEm 0.5
         ]
 
