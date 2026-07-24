@@ -31,10 +31,16 @@ import Html.Attributes as HA
 {-| Windows such as the market can contain several hundred nodes carrying text. Presenting all of
 them buries the window's own controls, so the list is cut off -- and says so, because a list that
 silently stops reads as a list that ended.
+
+The cut has to sit above what one window legitimately holds: the skill catalogue tab builds
+around three hundred items -- 24 skill groups and some 190 skill rows -- and at a cap of 100 the
+training-queue panel, which follows the catalogue in reading order, fell entirely past the cut
+and the queue was unreachable from that tab. Observed 2026-07-23.
+
 -}
 maximumNumberOfContentEntries : Int
 maximumNumberOfContentEntries =
-    100
+    400
 
 
 {-| How much text will be joined into one line before the walk gives up and leaves it in pieces.
@@ -111,7 +117,7 @@ panel, 2026-07-23.
 -}
 panelBodyHtml : Dict.Dict String (List String) -> Context event -> UITreeNodeWithDisplayRegion -> List (Html.Html event)
 panelBodyHtml typeHierarchy context node =
-    walk typeHierarchy node |> .items |> groupedHtml context
+    walk typeHierarchy False node |> .items |> groupedHtml context
 
 
 titleForWindow : GenericWindow -> String
@@ -181,6 +187,12 @@ handWrittenNames name =
 
         "reprocessingPlant" ->
             Just "Reprocessing Plant"
+
+        --  The certified starter plan's card in the skill window: its identity is only the AIR
+        --  logo image, so the reading finds nothing but the plan's remaining training time.
+        --  Observed 2026-07-23.
+        "SkillPlanEntry_AIR" ->
+            Just "AIR skill plan"
 
         _ ->
             Nothing
@@ -462,7 +474,7 @@ contentItemLists : Dict.Dict String (List String) -> GenericWindow -> List (List
 contentItemLists typeHierarchy window =
     window.contentNodes
         |> Common.nodesInReadingOrder
-        |> List.map (walk typeHierarchy >> .items)
+        |> List.map (walk typeHierarchy False >> .items)
 
 
 {-| What a walk of one node found, and whether any of its subtree was a control candidate.
@@ -484,8 +496,14 @@ type alias WalkResult =
     }
 
 
-walk : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> WalkResult
-walk typeHierarchy node =
+{-| `insideCandidate` says an ancestor of this node is a control candidate. Inside one, a
+container holding nothing but text is that control's label -- a skill row's name and time each
+sit in their own container -- not a card of its own, so the collapse that would make it one is
+suppressed and the text stays prose for the enclosing card to claim. Observed 2026-07-23 in the
+skill catalogue, where every row read as two unrelated pseudo-controls and a button.
+-}
+walk : Dict.Dict String (List String) -> Bool -> UITreeNodeWithDisplayRegion -> WalkResult
+walk typeHierarchy insideCandidate node =
     if not (Common.isVisible node) then
         { items = [], hasCandidate = False }
 
@@ -510,17 +528,20 @@ walk typeHierarchy node =
                         { items = entries |> List.map Control, hasCandidate = True }
 
                     Nothing ->
-                        walkContainer typeHierarchy node
+                        walkContainer typeHierarchy insideCandidate node
 
 
-walkContainer : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> WalkResult
-walkContainer typeHierarchy node =
+walkContainer : Dict.Dict String (List String) -> Bool -> UITreeNodeWithDisplayRegion -> WalkResult
+walkContainer typeHierarchy insideCandidate node =
     let
+            nodeIsCandidate =
+                isControlCandidate typeHierarchy node
+
             childResults =
                 node
                     |> EveOnline.ParseUserInterface.listChildrenWithDisplayRegion
                     |> Common.nodesInReadingOrder
-                    |> List.map (walk typeHierarchy)
+                    |> List.map (walk typeHierarchy (insideCandidate || nodeIsCandidate))
 
             childItems =
                 childResults |> List.concatMap .items
@@ -528,11 +549,8 @@ walkContainer typeHierarchy node =
             descendantHasCandidate =
                 childResults |> List.any .hasCandidate
 
-            nodeIsCandidate =
-                isControlCandidate typeHierarchy node
-
             walkResultBeforeScrollControls =
-                walkContainerItems typeHierarchy node childItems descendantHasCandidate nodeIsCandidate
+                walkContainerItems typeHierarchy insideCandidate node childItems descendantHasCandidate nodeIsCandidate
         in
         if Common.isScrollingContainer typeHierarchy node then
             let
@@ -557,19 +575,40 @@ walkContainer typeHierarchy node =
             walkResultBeforeScrollControls
 
 
-walkContainerItems : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> List ContentItem -> Bool -> Bool -> WalkResult
-walkContainerItems typeHierarchy node childItems descendantHasCandidate nodeIsCandidate =
+walkContainerItems : Dict.Dict String (List String) -> Bool -> UITreeNodeWithDisplayRegion -> List ContentItem -> Bool -> Bool -> WalkResult
+walkContainerItems typeHierarchy insideCandidate node childItems descendantHasCandidate nodeIsCandidate =
         if nodeIsCandidate && not descendantHasCandidate then
             --  A candidate with no candidate inside it is the control itself; its whole subtree
             --  is its label, and we do not descend past it. A control with no text at all is
             --  still a control -- the station service buttons are icon-only -- so it falls back
             --  to the client's tooltip or its internal name rather than being dropped.
             let
+                --  A hand-written name joins the contained text instead of being displaced by
+                --  it: the AIR skill plan card carries its identity only in a logo image, and
+                --  the one text inside it is a training time, so preferring the text alone
+                --  announced the plan as "1h 51m". Observed 2026-07-23.
+                translatedName =
+                    node.uiNode
+                        |> EveOnline.ParseUserInterface.getNameFromDictEntries
+                        |> Maybe.andThen handWrittenNames
+
                 label =
-                    (textOfSubtree node
-                        |> Maybe.withDefault (Common.labelForControl handWrittenNames node)
+                    (case ( translatedName, textOfSubtree node ) of
+                        ( Just name, Just text ) ->
+                            name ++ ", " ++ text
+
+                        ( Just name, Nothing ) ->
+                            --  The client's own tooltip still wins over the hand-written name.
+                            hintText node |> Maybe.withDefault name
+
+                        ( Nothing, Just text ) ->
+                            text
+
+                        ( Nothing, Nothing ) ->
+                            labelForIconOnlyControl node
                     )
                         ++ selectionSuffix node
+                        ++ skillLevelSuffix node
 
                 entry =
                     case checkboxState typeHierarchy node of
@@ -598,7 +637,15 @@ walkContainerItems typeHierarchy node childItems descendantHasCandidate nodeIsCa
             { items = mergeProseRuns childItems |> adoptTableCaptions, hasCandidate = True }
 
         else
-            case collapsedControlForNode node childItems of
+            case
+                (if insideCandidate then
+                    --  Inside a candidate the text is the candidate's label; see `walk`.
+                    Nothing
+
+                 else
+                    collapsedControlForNode node childItems
+                )
+            of
                 Just item ->
                     { items = [ item ], hasCandidate = False }
 
@@ -608,6 +655,22 @@ walkContainerItems typeHierarchy node childItems descendantHasCandidate nodeIsCa
                             { items = [ Prose { text = text, position = positionOfNode node } ]
                             , hasCandidate = False
                             }
+
+                        ( [], Nothing ) ->
+                            --  A container with no readable content but a tooltip is the client
+                            --  saying something it drew only as an image: the lock icon over the
+                            --  dimmed career paths carries `Complete the AIR skill plan to unlock
+                            --  the career paths.` and nothing else in the reading says the paths
+                            --  are locked. Only containers speak their hint this way; a control's
+                            --  tooltip stays a tooltip. Observed 2026-07-23.
+                            case ( node.children, hintText node ) of
+                                ( Just (_ :: _), Just hint ) ->
+                                    { items = [ Prose { text = hint, position = positionOfNode node } ]
+                                    , hasCandidate = False
+                                    }
+
+                                _ ->
+                                    { items = [], hasCandidate = False }
 
                         _ ->
                             { items = mergeProseRuns childItems, hasCandidate = False }
@@ -801,7 +864,10 @@ cardItems node childItems =
         Nothing
 
     else
-        Just (Control (Common.control (label ++ selectionSuffix node) node) :: innerControlsAndGroups)
+        Just
+            (Control (Common.control (label ++ selectionSuffix node ++ skillLevelSuffix node) node)
+                :: innerControlsAndGroups
+            )
 
 
 {-| A container holding nothing but text is itself one thing the player can act on.
@@ -923,13 +989,52 @@ groupConsecutiveProse items =
 Sorting by position here, rather than trusting the order the walk produced, is what keeps a
 headline in front of the line that qualifies it.
 
+Nearness is part of what makes two pieces one sentence. Pieces the client draws a screen apart
+are not fragments of each other, whatever order the walk met them in: the skill window's
+`Training Queue 0/150` caption sits at the top right and `Please select a Career Path above`
+at the bottom left, a thousand pixels apart, and merging read them as one line. A run breaks
+wherever the next piece starts more than `maximumMergedProseVerticalGap` below the previous
+one; grid cells and the lines of one card sit within a line height or two of each other and
+still merge. Observed 2026-07-23.
+
 -}
 mergedProse : List ProseText -> List ContentItem
 mergedProse texts =
-    let
-        ordered =
-            texts |> List.sortBy .position
+    texts
+        |> List.sortBy .position
+        |> splitAtVerticalGaps
+        |> List.concatMap mergedProseSegment
 
+
+maximumMergedProseVerticalGap : Int
+maximumMergedProseVerticalGap =
+    50
+
+
+splitAtVerticalGaps : List ProseText -> List (List ProseText)
+splitAtVerticalGaps ordered =
+    ordered
+        |> List.foldl
+            (\prose segments ->
+                case segments of
+                    (((previous :: _) as segment) :: rest) ->
+                        if Tuple.first prose.position - Tuple.first previous.position > maximumMergedProseVerticalGap then
+                            [ prose ] :: segments
+
+                        else
+                            (prose :: segment) :: rest
+
+                    _ ->
+                        [ prose ] :: segments
+            )
+            []
+        |> List.map List.reverse
+        |> List.reverse
+
+
+mergedProseSegment : List ProseText -> List ContentItem
+mergedProseSegment ordered =
+    let
         joined =
             ordered |> List.map .text |> String.join ", "
     in
@@ -1043,6 +1148,8 @@ familyRootsOfControls =
     , "TreeViewEntry" -- tree navigation rows; TreeViewEntryHeader, the settings category list, derives from it
     , "CircleNode" -- the career program's clickable circles: CareerNode path cards, ActivityNode mission categories. Without it the whole circle collapses into one control with the labels and counts scrambled. Observed in the AIR career program 2026-07-23.
     , "PanelEntryBase" -- the EVE menu's rows: PanelEntryGroup (expandable groups) and PanelEntryCmd (commands like Settings, Log off). Observed 2026-07-23.
+    , "ScrollContEntry" -- scroll-container entries of the newer UI framework: the skill window's SkillGroupEntry and SkillGroupSkillEntry rows, which SE_BaseClassCore does not cover. Without it the skill group grid merges into prose three groups per line. Observed 2026-07-23.
+    , "SkillPlanEntry" -- the skill window's plan cards: AirSkillPlanEntry, and the certified/personal plan cards of the same family. Clicking one opens the plan's detail panel. Without it the whole plans browser collapses into one control labeled with a training time. Observed 2026-07-23.
     ]
 
 
@@ -1260,6 +1367,213 @@ selectionSuffix node =
 
     else
         ""
+
+
+{-| The trained level a skill row shows through its five pips, as words.
+
+The client draws a `SkillBar` of `SkillLevel1`..`SkillLevel5` nodes in every skill row -- the
+catalogue, a plan's contents, the training queue -- and the state of each pip is the `Fill`
+inside it: a fully opaque fill on a trained level, a faint one (alpha ~30) on a level not yet
+trained, and a small amber one (alpha ~60) on a level only Omega may train. Only the opaque
+fill counts here. Measured 2026-07-23 against a character known to have Gallente Frigate at
+level 3: pips 1-3 opaque, pip 4 faint, pip 5 amber.
+
+Nodes without pips get no suffix, so this stays out of every other window.
+
+-}
+skillLevelSuffix : UITreeNodeWithDisplayRegion -> String
+skillLevelSuffix node =
+    let
+        pips =
+            node
+                |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+                |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "SkillLevel")
+    in
+    if List.isEmpty pips then
+        ""
+
+    else
+        let
+            trainedCount =
+                pips
+                    |> List.filter
+                        (\pip ->
+                            pip
+                                |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+                                |> List.any
+                                    (\descendant ->
+                                        (descendant.uiNode.pythonObjectTypeName == "Fill")
+                                            && (descendant.uiNode
+                                                    |> EveOnline.ParseUserInterface.getColorPercentFromDictEntries
+                                                    |> Maybe.map (\color -> 90 <= color.a)
+                                                    |> Maybe.withDefault False
+                                               )
+                                    )
+                        )
+                    |> List.length
+        in
+        if trainedCount == 0 then
+            ", not trained"
+
+        else
+            ", trained to level " ++ String.fromInt trainedCount
+
+
+{-| The client's tooltip for a node, cleaned for display.
+-}
+hintText : UITreeNodeWithDisplayRegion -> Maybe String
+hintText node =
+    node.uiNode
+        |> EveOnline.ParseUserInterface.getHintTextFromDictEntries
+        |> Maybe.map Common.plainText
+        |> Maybe.andThen EveOnline.ParseUserInterface.discardUnreadableText
+
+
+{-| A label for a control that carries no tooltip and no text anywhere in its subtree.
+
+Two sources remain, tried in order. The icon the control draws names its function where the
+function has been measured -- `iconTextureLabels`. Failing that, the client's internal name or
+type is made pronounceable: names like `ApplySkillPointsButtonIcon` are written by developers
+for developers, but they are still the client's own words for the thing, and `Apply Skill
+Points` reads better than the raw identifier a screen reader would otherwise spell through.
+
+-}
+labelForIconOnlyControl : UITreeNodeWithDisplayRegion -> String
+labelForIconOnlyControl node =
+    [ hintText node
+    , labelFromIconTexture node
+    , node.uiNode
+        |> EveOnline.ParseUserInterface.getNameFromDictEntries
+        |> Maybe.andThen humanizedIdentifier
+    , humanizedIdentifier node.uiNode.pythonObjectTypeName
+    ]
+        |> List.filterMap identity
+        |> List.head
+        |> Maybe.withDefault "(unlabeled)"
+
+
+{-| What pressing an icon-only control does, named by the icon the client draws on it.
+
+Each entry is a claim measured against a live client, the same debt `handWrittenNames` carries.
+All three observed 2026-07-23 in the skill window:
+
+  - the plus icon on a catalogue skill row added the skill's next level to the training queue;
+  - the skillbook icon opened the `Confirm Skill Purchase` dialog for the missing skillbook;
+  - the Omega icon marks a skill the current clone state cannot train.
+
+-}
+iconTextureLabels : List ( String, String )
+iconTextureLabels =
+    [ ( "buttoniconplus.png", "Add to training queue" )
+    , ( "windowicons/skills.png", "Buy skillbook" )
+    , ( "seasons/omega_32x32.png", "Requires Omega" )
+    ]
+
+
+labelFromIconTexture : UITreeNodeWithDisplayRegion -> Maybe String
+labelFromIconTexture node =
+    (node :: EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion node)
+        |> List.filterMap (.uiNode >> EveOnline.ParseUserInterface.getTexturePathFromDictEntries)
+        |> List.filterMap
+            (\texturePath ->
+                iconTextureLabels
+                    |> List.filterMap
+                        (\( ending, label ) ->
+                            if String.endsWith ending (String.toLower texturePath) then
+                                Just label
+
+                            else
+                                Nothing
+                        )
+                    |> List.head
+            )
+        |> List.head
+
+
+{-| A developer identifier as words: the last underscore-separated segment, split at the case
+changes, with trailing widget-kind tokens dropped. `DockPanel_HeaderButton_ChangeViewMode`
+becomes `Change View Mode`; `ApplySkillPointsButtonIcon` becomes `Apply Skill Points`.
+`Nothing` where nothing readable remains, such as a bare `ButtonIcon`.
+-}
+humanizedIdentifier : String -> Maybe String
+humanizedIdentifier identifier =
+    identifier
+        |> String.split "_"
+        |> List.filter (String.isEmpty >> not)
+        |> List.reverse
+        |> List.head
+        |> Maybe.map splitAtCaseChanges
+        |> Maybe.map dropTrailingWidgetKindTokens
+        |> Maybe.andThen
+            (\words ->
+                case words of
+                    [] ->
+                        Nothing
+
+                    firstWord :: moreWords ->
+                        Just (String.join " " (capitalizedWord firstWord :: moreWords))
+            )
+
+
+dropTrailingWidgetKindTokens : List String -> List String
+dropTrailingWidgetKindTokens words =
+    let
+        widgetKindTokens =
+            [ "button", "btn", "icon" ]
+
+        dropFromEnd reversedWords =
+            case reversedWords of
+                lastWord :: precedingWords ->
+                    if List.member (String.toLower lastWord) widgetKindTokens then
+                        dropFromEnd precedingWords
+
+                    else
+                        reversedWords
+
+                [] ->
+                    []
+    in
+    words |> List.reverse |> dropFromEnd |> List.reverse
+
+
+splitAtCaseChanges : String -> List String
+splitAtCaseChanges text =
+    text
+        |> String.foldl
+            (\character words ->
+                case words of
+                    currentWord :: precedingWords ->
+                        if Char.isUpper character && not (String.isEmpty currentWord) then
+                            case String.right 1 currentWord |> String.uncons of
+                                Just ( lastCharacter, _ ) ->
+                                    if Char.isUpper lastCharacter then
+                                        (currentWord ++ String.fromChar character) :: precedingWords
+
+                                    else
+                                        String.fromChar character :: words
+
+                                Nothing ->
+                                    (currentWord ++ String.fromChar character) :: precedingWords
+
+                        else
+                            (currentWord ++ String.fromChar character) :: precedingWords
+
+                    [] ->
+                        [ String.fromChar character ]
+            )
+            [ "" ]
+        |> List.filter (String.isEmpty >> not)
+        |> List.reverse
+
+
+capitalizedWord : String -> String
+capitalizedWord word =
+    case String.uncons word of
+        Just ( firstCharacter, rest ) ->
+            String.cons (Char.toUpper firstCharacter) rest
+
+        Nothing ->
+            word
 
 
 {-| A `Link` object, or text carrying the client's own link markup. The markup is checked before it

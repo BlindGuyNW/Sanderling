@@ -566,10 +566,23 @@ replaceWithRegex pattern replacement text =
 
 {-| Whether the game client is actually showing this node. Announcing something the player cannot
 see would be misleading, and offering a click on it would send input that lands somewhere else.
+
+Hidden means alpha, not absence: the client leaves nodes in the tree and makes them transparent.
+A region-only check read the skill queue's timeline tick labels -- `6h, 12h, 18h, 24h` in a
+container at `_opacity` 0 -- into an empty queue. Observed 2026-07-23. Only the node's own
+opacity needs checking here, because the walk that consults this descends the tree and stops at
+the transparent container before ever reaching its children.
+
 -}
 isVisible : UITreeNodeWithDisplayRegion -> Bool
 isVisible node =
-    0 < node.totalDisplayRegionVisible.width && 0 < node.totalDisplayRegionVisible.height
+    (0 < node.totalDisplayRegionVisible.width)
+        && (0 < node.totalDisplayRegionVisible.height)
+        && (node.uiNode
+                |> EveOnline.ParseUserInterface.getOpacityFloatFromDictEntries
+                |> Maybe.map (\opacity -> 0.05 < opacity)
+                |> Maybe.withDefault True
+           )
 
 
 {-| A node that clips and scrolls its content, told by the client classes in its inheritance
