@@ -1678,7 +1678,7 @@ displayOtherWindows maybeInputRouteConfig typeHierarchy parsedUserInterface =
                     (\layerName ->
                         parsedUserInterface.layers
                             |> List.filter (.name >> (==) layerName)
-                            |> List.concatMap EveOnline.ParseUserInterface.parseGenericWindowsFromLayer
+                            |> List.concatMap (EveOnline.ParseUserInterface.parseGenericWindowsFromLayer typeHierarchy)
                     )
                 |> List.filter (.uiNode >> Frontend.View.Common.isVisible)
                 |> List.filter (windowIsShownSeparately >> not)

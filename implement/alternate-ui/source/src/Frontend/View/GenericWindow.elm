@@ -126,7 +126,7 @@ titleForWindow window =
                     handWrittenNames name |> Maybe.withDefault name
 
                 Nothing ->
-                    window.typeName
+                    handWrittenNames window.typeName |> Maybe.withDefault window.typeName
 
 
 {-| Names for the nodes whose label the client only supplies on hover, so a reading finds nothing
@@ -146,6 +146,11 @@ handWrittenNames name =
 
         "agentChatBtn" ->
             Just "Start Conversation"
+
+        --  The panel the Neocom's EVE logo button opens; it carries no caption and no name,
+        --  so its type is all a reading finds to call it by. Observed docked, 2026-07-23.
+        "PanelEveMenu" ->
+            Just "EVE Menu"
 
         "charcustomization" ->
             Just "Character Customization"
@@ -1037,6 +1042,7 @@ familyRootsOfControls =
     , "Checkbox" -- labelled checkboxes, e.g. the settings window's effects toggles
     , "TreeViewEntry" -- tree navigation rows; TreeViewEntryHeader, the settings category list, derives from it
     , "CircleNode" -- the career program's clickable circles: CareerNode path cards, ActivityNode mission categories. Without it the whole circle collapses into one control with the labels and counts scrambled. Observed in the AIR career program 2026-07-23.
+    , "PanelEntryBase" -- the EVE menu's rows: PanelEntryGroup (expandable groups) and PanelEntryCmd (commands like Settings, Log off). Observed 2026-07-23.
     ]
 
 

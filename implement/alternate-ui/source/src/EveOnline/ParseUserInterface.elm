@@ -852,8 +852,8 @@ AIR career program lives there, observed 2026-07-23. The Neocom and the info pan
 container do not have the window `content` shape and fall out in `parseGenericWindow`.
 
 -}
-parseGenericWindowsFromLayer : UILayer -> List GenericWindow
-parseGenericWindowsFromLayer layer =
+parseGenericWindowsFromLayer : Dict.Dict String (List String) -> UILayer -> List GenericWindow
+parseGenericWindowsFromLayer typeHierarchy layer =
     let
         dockedSidePanels =
             layer.uiNode
@@ -862,12 +862,12 @@ parseGenericWindowsFromLayer layer =
                 |> List.concatMap listChildrenWithDisplayRegion
     in
     ((layer.uiNode |> listChildrenWithDisplayRegion) ++ dockedSidePanels)
-        |> List.filterMap parseGenericWindow
+        |> List.filterMap (parseGenericWindow typeHierarchy)
         |> List.reverse
 
 
-parseGenericWindow : UITreeNodeWithDisplayRegion -> Maybe GenericWindow
-parseGenericWindow windowNode =
+parseGenericWindow : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> Maybe GenericWindow
+parseGenericWindow typeHierarchy windowNode =
     let
         childNamed name parent =
             parent
@@ -890,7 +890,26 @@ parseGenericWindow windowNode =
     in
     case maybeContentNode of
         Nothing ->
-            Nothing
+            --  The EVE menu -- `PanelEveMenu`, opened from the Neocom -- carries no `content`
+            --  child at all: it is a panel of the client's `PanelBase` family, a flat list of
+            --  entries. The client's own base class is the signal, so a future panel of the
+            --  same family is caught with no change here. Observed docked, 2026-07-23.
+            if
+                Dict.get windowNode.uiNode.pythonObjectTypeName typeHierarchy
+                    |> Maybe.withDefault [ windowNode.uiNode.pythonObjectTypeName ]
+                    |> List.member "PanelBase"
+            then
+                Just
+                    { uiNode = windowNode
+                    , typeName = windowNode.uiNode.pythonObjectTypeName
+                    , name = windowNode.uiNode |> getNameFromDictEntries
+                    , caption = Nothing
+                    , headerButtons = []
+                    , contentNodes = windowNode |> listChildrenWithDisplayRegion
+                    }
+
+            else
+                Nothing
 
         Just contentNode ->
             let
