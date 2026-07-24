@@ -845,11 +845,23 @@ layerNamesInPresentationOrder =
 
 {-| The windows the client is showing in the given layer. The last child of a layer is the one
 drawn on top, so the result is ordered with the topmost window first.
+
+Besides the windows sitting directly in a layer, the client docks window-shaped panels into the
+`l_sidePanels` container next to the Neocom (`l_viewstate > l_view_overlays > SidePanels`): the
+AIR career program lives there, observed 2026-07-23. The Neocom and the info panels sharing that
+container do not have the window `content` shape and fall out in `parseGenericWindow`.
+
 -}
 parseGenericWindowsFromLayer : UILayer -> List GenericWindow
 parseGenericWindowsFromLayer layer =
-    layer.uiNode
-        |> listChildrenWithDisplayRegion
+    let
+        dockedSidePanels =
+            layer.uiNode
+                |> listDescendantsWithDisplayRegion
+                |> List.filter (.uiNode >> getNameFromDictEntries >> (==) (Just "l_sidePanels"))
+                |> List.concatMap listChildrenWithDisplayRegion
+    in
+    ((layer.uiNode |> listChildrenWithDisplayRegion) ++ dockedSidePanels)
         |> List.filterMap parseGenericWindow
         |> List.reverse
 
@@ -882,8 +894,17 @@ parseGenericWindow windowNode =
 
         Just contentNode ->
             let
+                --  Windows in `l_main` name it `headerParent`; the dockable side panels
+                --  spell it `__headerParent` (AIR career program, observed 2026-07-23).
                 headerParentNode =
-                    contentNode |> childNamed "headerParent"
+                    contentNode
+                        |> listChildrenWithDisplayRegion
+                        |> List.filter
+                            (\child ->
+                                List.member (child.uiNode |> getNameFromDictEntries)
+                                    [ Just "headerParent", Just "__headerParent" ]
+                            )
+                        |> List.head
 
                 captionFromWindowCaption =
                     headerParentNode
@@ -910,18 +931,29 @@ parseGenericWindow windowNode =
                                 |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "TextHeadline")
                                 |> List.head
 
-                caption =
-                    case captionFromWindowCaption of
-                        Just fromWindowCaption ->
-                            Just fromWindowCaption
+                captionFromHeadline =
+                    headlineNode
+                        |> Maybe.map getAllContainedDisplayTextsWithRegion
+                        |> Maybe.withDefault []
+                        |> List.map Tuple.first
+                        |> List.filterMap discardUnreadableText
+                        |> List.head
 
-                        Nothing ->
-                            headlineNode
-                                |> Maybe.map getAllContainedDisplayTextsWithRegion
-                                |> Maybe.withDefault []
-                                |> List.map Tuple.first
-                                |> List.filterMap discardUnreadableText
-                                |> List.head
+                --  The dockable side panels carry neither a `WindowCaption` nor a
+                --  `TextHeadline`: their title is the header's own label text
+                --  ("AIR Career Program"). Last in preference, so it cannot displace either.
+                captionFromHeaderText =
+                    headerParentNode
+                        |> Maybe.map getAllContainedDisplayTextsWithRegion
+                        |> Maybe.withDefault []
+                        |> List.map Tuple.first
+                        |> List.filterMap discardUnreadableText
+                        |> List.head
+
+                caption =
+                    [ captionFromWindowCaption, captionFromHeadline, captionFromHeaderText ]
+                        |> List.filterMap identity
+                        |> List.head
 
                 --  The container of the window's chrome: `headerParent` where there is one,
                 --  otherwise the content child holding the caption headline. What is not the
