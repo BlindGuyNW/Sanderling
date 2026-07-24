@@ -1203,34 +1203,43 @@ getFixedNumberFromDictEntries propertyName uiNode =
             Nothing
 
 
+{-| Open menus, from both layers the client opens menus into. Right-click menus and combo
+options land in `l_menu`; a util menu -- the small ⋯/menu button beside the training queue's
+caption, and its siblings on other panels -- opens its options into `l_utilmenu` as an
+`ExpandedUtilMenu` of `UtilMenuIconEntry` rows, the same shape as a context menu in a layer of
+its own. Without reading that layer the open util menu appeared nowhere at all: it has no
+window `content` shape, so the generic shell drops it too. The `buttonCopy` container the
+client puts beside it in the layer does not pass the type filter. Observed 2026-07-23 on the
+skill queue's util menu (Copy all skills to clipboard, Clear skill queue, ...).
+-}
 parseContextMenusFromUITreeRoot : UITreeNodeWithDisplayRegion -> List ContextMenu
 parseContextMenusFromUITreeRoot uiTreeRoot =
-    case
-        uiTreeRoot
-            |> listChildrenWithDisplayRegion
-            |> List.filter (.uiNode >> getNameFromDictEntries >> Maybe.map String.toLower >> (==) (Just "l_menu"))
-            |> List.head
-    of
-        Nothing ->
-            []
-
-        Just layerMenu ->
-            layerMenu
-                |> listChildrenWithDisplayRegion
-                |> List.filter
-                    (\child ->
-                        (child.uiNode.pythonObjectTypeName |> String.toLower |> String.contains "menu")
-                            || --  A combo box opens its options into this layer too, as a plain
-                               --  `Container` holding `ComboEntry` rows. Without this it renders
-                               --  nowhere at all: it is no window, and its type says nothing.
-                               --  Observed on the settings window's Display Mode combo,
-                               --  2026-07-23.
-                               (child
-                                    |> listDescendantsWithDisplayRegion
-                                    |> List.any (.uiNode >> .pythonObjectTypeName >> (==) "ComboEntry")
-                               )
-                    )
-                |> List.map parseContextMenu
+    [ "l_menu", "l_utilmenu" ]
+        |> List.concatMap
+            (\layerName ->
+                uiTreeRoot
+                    |> listChildrenWithDisplayRegion
+                    |> List.filter (.uiNode >> getNameFromDictEntries >> Maybe.map String.toLower >> (==) (Just layerName))
+            )
+        |> List.concatMap
+            (\layerMenu ->
+                layerMenu
+                    |> listChildrenWithDisplayRegion
+                    |> List.filter
+                        (\child ->
+                            (child.uiNode.pythonObjectTypeName |> String.toLower |> String.contains "menu")
+                                || --  A combo box opens its options into this layer too, as a plain
+                                   --  `Container` holding `ComboEntry` rows. Without this it renders
+                                   --  nowhere at all: it is no window, and its type says nothing.
+                                   --  Observed on the settings window's Display Mode combo,
+                                   --  2026-07-23.
+                                   (child
+                                        |> listDescendantsWithDisplayRegion
+                                        |> List.any (.uiNode >> .pythonObjectTypeName >> (==) "ComboEntry")
+                                   )
+                        )
+            )
+        |> List.map parseContextMenu
 
 
 parseInfoPanelContainerFromUIRoot : UITreeNodeWithDisplayRegion -> Maybe InfoPanelContainer
@@ -1582,6 +1591,10 @@ parseContextMenu contextMenuUINode =
                                --  combo. No marker distinguishes the current selection -- the
                                --  combo control itself reads its current value.
                                (descendant.uiNode.pythonObjectTypeName == "ComboEntry")
+                            || --  The rows of an open util menu in `l_utilmenu`; the "icon" in
+                               --  the middle of the name keeps the "menuentry" substring from
+                               --  matching. Observed 2026-07-23 on the skill queue's util menu.
+                               (descendant.uiNode.pythonObjectTypeName == "UtilMenuIconEntry")
                     )
 
         entries =
