@@ -1036,6 +1036,7 @@ familyRootsOfControls =
     , "Combo" -- dropdown selectors: SystemMenuCombo in the settings window; opens its options as a menu
     , "Checkbox" -- labelled checkboxes, e.g. the settings window's effects toggles
     , "TreeViewEntry" -- tree navigation rows; TreeViewEntryHeader, the settings category list, derives from it
+    , "CircleNode" -- the career program's clickable circles: CareerNode path cards, ActivityNode mission categories. Without it the whole circle collapses into one control with the labels and counts scrambled. Observed in the AIR career program 2026-07-23.
     ]
 
 
