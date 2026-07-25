@@ -12,7 +12,7 @@
 // with the release URL + hash and delete the prebuilt copy (see CLAUDE.md version pinning).
 // Superseded release pin: https://github.com/Arcitectus/Sanderling/releases/download/v2025-10-24/read-memory-64-bit-separate-assemblies-594a2339a63d7e946872a77c0d5772acdf75bd98-win-x64.zip
 // Superseded release hash: sha256:b1cb3048db6b5be1016c3ef97f7054a99643a2e8376654b4964aada0669bc472
-#r "sha256:1c9c2ba1d62f24f8a5a7d1a1590d6d1cf985322fc0c7e34e11c8259f97e39b0f"
+#r "sha256:ac7572201002bff4c07094ce903cfe84e53a7b78a0a097a341dd5d329246716a"
 
 #r "mscorlib"
 #r "netstandard"

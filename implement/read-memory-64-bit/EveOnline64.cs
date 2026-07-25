@@ -397,7 +397,26 @@ public class EveOnline64
             "enabled",
             "isDisabled",
             "_enabled",
-            "_interaction_state");
+            "_interaction_state",
+
+            /*
+             * 2026-07-25 Which of a set of controls is the current one, and whether a checkbox is
+             * ticked. Same story as the keys above: the client states it, and without these the
+             * only evidence is a SelectionIndicatorLine's colour alpha, which by its own admission
+             * cannot tell tabs apart because a tab strip draws its one line beside the tabs rather
+             * than inside the selected one.
+             *
+             * "_selected" on the Tab, InventoryTab and SideNavigationEntry families, and on
+             * ColumnHeader, where it marks the sorted column. "isSelected" on
+             * SkillPanelToggleButtonLarge and the ButtonIcon family. "_checked" on Checkbox.
+             *
+             * "isActive" and "_pressed" are deliberately absent: the first reads True on nearly
+             * every live widget and means alive rather than current, and the second is a transient
+             * mouse state. Both were measured and rejected rather than not looked at.
+             * */
+            "_selected",
+            "isSelected",
+            "_checked");
 
     struct LocalMemoryReadingTools
     {

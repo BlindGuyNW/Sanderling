@@ -26,6 +26,7 @@ import EveOnline.ParseUserInterface exposing (GenericWindow, UITreeNodeWithDispl
 import Frontend.View.Common as Common exposing (Context)
 import Html
 import Html.Attributes as HA
+import Json.Decode
 
 
 {-| Windows such as the market can contain several hundred nodes carrying text. Presenting all of
@@ -1533,13 +1534,17 @@ fittingSlotFamilyForFlag flag =
 
 {-| The on/off state the client draws on a `Checkbox`, or `Nothing` for anything that is not one.
 
-Checked is the presence of a sprite named `self_ok` in the checkbox's subtree; unchecked, the
-client removes the sprite entirely rather than hiding it. The same marking as
-`MenuEntryViewCheckbox` uses in context menus. Absence only means unchecked on a node of the
-Checkbox family, so everything else gets no state at all.
+The client keeps it in `_checked`, written as 0/1 -- read 2026-07-25 as `1` on the ship info
+window's ticked `Filter out acquired skills`.
 
-Observed in the settings window on 2026-07-23: the ten enabled effects checkboxes each carried
-the sprite, the two disabled character-display ones did not, matching the client's own display.
+Where that key is absent the older evidence still decides: checked is the presence of a sprite
+named `self_ok` in the checkbox's subtree, since unchecked the client removes the sprite entirely
+rather than hiding it, the same marking `MenuEntryViewCheckbox` uses in context menus. Observed in
+the settings window 2026-07-23, where the ten enabled effects checkboxes each carried the sprite
+and the two disabled character-display ones did not.
+
+Either way the answer is only offered for a node of the Checkbox family, so everything else gets
+no state at all.
 
 -}
 checkboxState : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> Maybe Bool
@@ -1550,38 +1555,82 @@ checkboxState typeHierarchy node =
 
         inheritanceChain =
             Dict.get typeName typeHierarchy |> Maybe.withDefault [ typeName ]
-    in
-    if List.member "Checkbox" inheritanceChain then
-        Just
-            (node
+
+        checkedFlag =
+            node.uiNode.dictEntriesOfInterest
+                |> Dict.get "_checked"
+                |> Maybe.andThen (Json.Decode.decodeValue decodeBoolOrInt >> Result.toMaybe)
+
+        drawsCheckMarkSprite =
+            node
                 |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
                 |> List.any
                     (.uiNode
                         >> EveOnline.ParseUserInterface.getNameFromDictEntries
                         >> (==) (Just "self_ok")
                     )
-            )
+    in
+    if List.member "Checkbox" inheritanceChain then
+        Just (Maybe.withDefault drawsCheckMarkSprite checkedFlag)
 
     else
         Nothing
 
 
-{-| The word for the client's selection highlight, appended to a control's label. The client
-marks the selected entry of a list -- an inventory container, the active member of many stacks --
-by drawing a `SelectionIndicatorLine` inside the entry's own subtree, which is geometry and
-color, so a screen reader hears nothing of it. Only a line *inside* the control marks it: a tab
-strip draws its one line beside the tabs in the group container, so tabs are not told apart this
-way. Observed 2026-07-23 on the inventory's container tree, where the entry's header row holds
-the line while the entry is the selected container. Whether a line is actually drawn is its
-alpha, not its presence -- see `subtreeShowsSelectionIndicator`.
+{-| The word for the client's selection highlight, appended to a control's label.
+
+The client states which control is current, under one of two names depending on the family, and
+that is asked first. Measured 2026-07-25 on the `Imicus (Frigate): Information` window and the
+station lobby beside it:
+
+  - `_selected` on `Tab`, `InventoryTab` and `SideNavigationEntry`, and on `ColumnHeader`, where
+    it marks the column the list is sorted by. `True` on exactly one member of each strip: the
+    `Skills` side-navigation entry, the station window's inventory panel tab, its `Ships` tab.
+  - `isSelected` on `SkillPanelToggleButtonLarge` and the `ButtonIcon` family. `True` on the
+    mastery level tab being viewed, and on the current view-mode button of the station's ship list.
+
+Falling back to the drawing when neither key is present keeps what already worked: the client also
+marks a selected list entry by drawing a `SelectionIndicatorLine` inside the entry's own subtree,
+which is how the inventory's container tree reads (observed 2026-07-23; whether a line counts is
+its alpha, not its presence -- see `subtreeShowsSelectionIndicator`). That test could never handle
+a tab strip, which draws its one line beside the tabs rather than inside the selected one, and the
+keys above are what close that gap.
+
 -}
 selectionSuffix : UITreeNodeWithDisplayRegion -> String
 selectionSuffix node =
-    if EveOnline.ParseUserInterface.subtreeShowsSelectionIndicator node then
+    let
+        selectedFlag key =
+            node.uiNode.dictEntriesOfInterest
+                |> Dict.get key
+                |> Maybe.andThen (Json.Decode.decodeValue decodeBoolOrInt >> Result.toMaybe)
+
+        isSelected =
+            case ( selectedFlag "_selected", selectedFlag "isSelected" ) of
+                ( Just selected, _ ) ->
+                    selected
+
+                ( Nothing, Just selected ) ->
+                    selected
+
+                ( Nothing, Nothing ) ->
+                    EveOnline.ParseUserInterface.subtreeShowsSelectionIndicator node
+    in
+    if isSelected then
         " (selected)"
 
     else
         ""
+
+
+{-| The client writes a flag either as a python bool or as 0/1, depending on the widget.
+-}
+decodeBoolOrInt : Json.Decode.Decoder Bool
+decodeBoolOrInt =
+    Json.Decode.oneOf
+        [ Json.Decode.bool
+        , Json.Decode.int |> Json.Decode.map (\asInt -> asInt /= 0)
+        ]
 
 
 {-| The trained level a skill row shows through its five pips, as words.
