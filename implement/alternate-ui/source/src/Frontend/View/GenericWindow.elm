@@ -158,6 +158,16 @@ handWrittenNames name =
         "PanelEveMenu" ->
             Just "EVE Menu"
 
+        --  The capacity readouts beside the fitting window's hull: the client draws each as an
+        --  icon, the amount used, the capacity and the unit, with nothing in the reading saying
+        --  which bay it is, so the two came out as two runs of bare numbers -- `0, / 50.0, m3`
+        --  and `10.0, / 10.0, m3`. Observed 2026-07-25.
+        "cargoSlot" ->
+            Just "Cargo hold"
+
+        "droneSlot" ->
+            Just "Drone bay"
+
         "charcustomization" ->
             Just "Character Customization"
 
@@ -528,7 +538,15 @@ walk typeHierarchy insideCandidate node =
                         { items = entries |> List.map Control, hasCandidate = True }
 
                     Nothing ->
-                        walkContainer typeHierarchy insideCandidate node
+                        --  Also before the container logic: the slots are read as the ship's
+                        --  slot layout rather than in the order the ring puts them on screen,
+                        --  which the container walk would impose. See `fittingSlotItems`.
+                        case fittingSlotItems typeHierarchy node of
+                            Just items ->
+                                { items = items, hasCandidate = True }
+
+                            Nothing ->
+                                walkContainer typeHierarchy insideCandidate node
 
 
 walkContainer : Dict.Dict String (List String) -> Bool -> UITreeNodeWithDisplayRegion -> WalkResult
@@ -1077,7 +1095,7 @@ isGroupHeading node =
 
 {-| Something the player acts on, whose insides are its label rather than things of their own.
 
-Three independent signals, in order of how much we trust them:
+Four independent signals, in order of how much we trust them:
 
 1.  **Inheritance.** The client builds each widget from a class, and stores that class's ancestry.
     `TrackJobButton` derives from `Button`; `ButtonGroup` and `ButtonWrapper` do not -- they are
@@ -1096,6 +1114,13 @@ Three independent signals, in order of how much we trust them:
 3.  **An exact type name.** A few controls -- `GroupAllButton`, `SidePanelButton` -- derive straight
     from `Container` with no distinctive base, so inheritance cannot find them. They are named
     individually, matched by equality. Never by substring: that is what broke signal 1.
+
+4.  **A name we translated.** An entry in `handWrittenNames` says someone measured this node and
+    decided the client gives it no usable label, which also makes it a thing worth keeping whole.
+    Without this, a named node that holds nothing but text is swallowed by whichever container
+    above it collapses first, and the name never reaches the page: the fitting window's two
+    capacity readouts sit side by side in one wrapper, so both collapsed into a single control
+    reading `0, / 50.0, m3, 10.0, / 10.0` -- five numbers and no bay. Observed 2026-07-25.
 
 Getting this wrong in the generous direction costs a control that does nothing; getting it wrong in
 the strict direction costs the player the only way to act on something, so it leans generous. A
@@ -1124,6 +1149,12 @@ isControlCandidate typeHierarchy node =
     isLinkNode node
         || List.member typeName controlTypeNames
         || List.any (\root -> List.member root inheritanceChain) familyRootsOfControls
+        || ((node.uiNode
+                |> EveOnline.ParseUserInterface.getNameFromDictEntries
+                |> Maybe.andThen handWrittenNames
+            )
+                /= Nothing
+           )
 
 
 {-| The client base classes that mark a family of controls, matched anywhere in a type's ancestry.
@@ -1314,6 +1345,190 @@ textFieldItems typeHierarchy node =
             (Common.textFieldControl label (textOfDescendantNamed "textLabel") node
                 :: innerControls
             )
+
+
+{-| The module slots of the fitting window, read as the ship's slot layout, or `Nothing` for any
+container that holds no slots.
+
+Two things made this unreadable, and both come from the client drawing the slots as a ring around
+the hull rather than as a list.
+
+The first is order. `Common.nodesInReadingOrder` sorts down the window and then across, which is
+right for a window laid out in rows (`CONVENTIONS.md` rule 7) and meaningless for a circle: it
+interleaves the families, so the reading ran `Civilian Salvager`, `Miner I`, `Civilian Gatling
+Railgun`, `Empty Rig Slot`, `1MN Civilian Afterburner`, `Empty Rig Slot`, `Empty medium power
+slot` -- every module present and nothing saying which slot any of them sat in. A slot's own index
+is the inventory flag the client keeps in `_name`, and that flag is what the fitting is keyed by,
+so the slots are grouped by family and ordered by flag instead.
+
+The second is the bare numbers. The client builds a node for every slot of every family and draws
+the ones this hull does not have at `_opacity` 0.1, carrying no tooltip and no children. With no
+tooltip the label fell through to the internal name, and a fitting slot's internal name is its
+flag number, so a Venture's fitting read `30`, `31`, `32`, `33`, `34`, `22`, `128`, ... Dimmed
+means the hull has no such slot, so those are not presented at all -- rule 6.
+
+The label is the client's own tooltip after the position: `High slot 1: Civilian Gatling Railgun`,
+`Medium slot 2: Empty medium power slot`. Nothing infers whether a slot is filled -- the client
+says so itself, in the player's language, and an empty slot naming its own type twice reads better
+than a guess at what "empty" looks like in the tree.
+
+Observed 2026-07-25 on a Venture: flags 27-29 fitted and 30-34 dimmed; 19 fitted, 20-21 empty and
+22-26 dimmed; 11 empty and 12-18 dimmed; 92-94 empty; 125-128 dimmed.
+
+-}
+fittingSlotItems : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> Maybe (List ContentItem)
+fittingSlotItems typeHierarchy node =
+    let
+        isSlot candidate =
+            let
+                typeName =
+                    candidate.uiNode.pythonObjectTypeName
+
+                inheritanceChain =
+                    Dict.get typeName typeHierarchy |> Maybe.withDefault [ typeName ]
+            in
+            List.member "FittingSlotBase" inheritanceChain
+
+        ( slotNodes, otherNodes ) =
+            node
+                |> EveOnline.ParseUserInterface.listChildrenWithDisplayRegion
+                |> List.partition isSlot
+    in
+    if List.isEmpty slotNodes then
+        Nothing
+
+    else
+        --  The container's other children keep the ordinary walk, and come first, so anything
+        --  the client draws beside the ring is not filed under the last slot family's heading.
+        Just
+            ((otherNodes
+                |> Common.nodesInReadingOrder
+                |> List.concatMap (walk typeHierarchy False >> .items)
+             )
+                ++ fittingSlotGroups slotNodes
+            )
+
+
+fittingSlotGroups : List UITreeNodeWithDisplayRegion -> List ContentItem
+fittingSlotGroups slotNodes =
+    let
+        slotsOnThisHull =
+            slotNodes
+                |> List.filter fittingSlotIsOnThisHull
+                |> List.filterMap
+                    (\slotNode ->
+                        slotNode.uiNode
+                            |> EveOnline.ParseUserInterface.getNameFromDictEntries
+                            |> Maybe.andThen String.toInt
+                            |> Maybe.map (\flag -> ( flag, slotNode ))
+                    )
+                |> List.sortBy Tuple.first
+
+        groupItems title members =
+            if List.isEmpty members then
+                []
+
+            else
+                Group title
+                    :: (members
+                            |> List.map
+                                (\( flag, slotNode ) ->
+                                    Control (Common.control (fittingSlotLabel flag slotNode) slotNode)
+                                )
+                       )
+
+        familyGroups =
+            fittingSlotFamilies
+                |> List.concatMap
+                    (\family ->
+                        groupItems family.groupTitle
+                            (slotsOnThisHull |> List.filter (Tuple.first >> familyHoldsFlag family))
+                    )
+
+        --  A family nobody has seen yet still reads, under its flag: degrading over
+        --  disappearing, the same trade `CONVENTIONS.md` rule 1a describes.
+        otherGroup =
+            groupItems "Other slots"
+                (slotsOnThisHull
+                    |> List.filter (\( flag, _ ) -> fittingSlotFamilyForFlag flag == Nothing)
+                )
+    in
+    familyGroups ++ otherGroup
+
+
+{-| Whether the hull actually has this slot. The client keeps a node for every slot of every
+family and marks the ones the hull lacks by drawing them at a tenth opacity; those also carry no
+tooltip and no children, so there is nothing to say about them either.
+-}
+fittingSlotIsOnThisHull : UITreeNodeWithDisplayRegion -> Bool
+fittingSlotIsOnThisHull slotNode =
+    slotNode.uiNode
+        |> EveOnline.ParseUserInterface.getOpacityFloatFromDictEntries
+        |> Maybe.map (\opacity -> 0.5 < opacity)
+        |> Maybe.withDefault True
+
+
+fittingSlotLabel : Int -> UITreeNodeWithDisplayRegion -> String
+fittingSlotLabel flag slotNode =
+    let
+        position =
+            case fittingSlotFamilyForFlag flag of
+                Just family ->
+                    family.entryPrefix ++ " " ++ String.fromInt (flag - family.firstFlag + 1)
+
+                Nothing ->
+                    "Slot " ++ String.fromInt flag
+    in
+    case hintText slotNode of
+        Just hint ->
+            position ++ ": " ++ hint
+
+        Nothing ->
+            position
+
+
+type alias FittingSlotFamily =
+    { firstFlag : Int
+    , lastFlag : Int
+    , groupTitle : String
+    , entryPrefix : String
+    }
+
+
+{-| The inventory flags the client numbers each family of slots from, in the order a player reads
+a fitting: high, medium, low, then the rigs and subsystems that are set once and left alone.
+
+These are constants of the game's own inventory model rather than anything this reading invents,
+which is why the slot's `_name` is the flag -- but the names here are ours, so this is the debt
+`CONVENTIONS.md` rule 4 describes. Every family below was seen on one Venture on 2026-07-25:
+11-18 low, 19-26 medium, 27-34 high, 92-94 rig, 125-128 subsystem. The upper bounds of the rig and
+subsystem ranges are extrapolated from the eight-slot stride the other families use; a flag past
+the end of its family lands in `Other slots` rather than disappearing.
+
+An empty slot's tooltip states its own family -- `Empty medium power slot`, `Empty Rig Slot` --
+so the client corroborates this table wherever a slot is unfilled.
+
+-}
+fittingSlotFamilies : List FittingSlotFamily
+fittingSlotFamilies =
+    [ { firstFlag = 27, lastFlag = 34, groupTitle = "High power slots", entryPrefix = "High slot" }
+    , { firstFlag = 19, lastFlag = 26, groupTitle = "Medium power slots", entryPrefix = "Medium slot" }
+    , { firstFlag = 11, lastFlag = 18, groupTitle = "Low power slots", entryPrefix = "Low slot" }
+    , { firstFlag = 92, lastFlag = 99, groupTitle = "Rig slots", entryPrefix = "Rig slot" }
+    , { firstFlag = 125, lastFlag = 132, groupTitle = "Subsystem slots", entryPrefix = "Subsystem slot" }
+    ]
+
+
+familyHoldsFlag : FittingSlotFamily -> Int -> Bool
+familyHoldsFlag family flag =
+    (family.firstFlag <= flag) && (flag <= family.lastFlag)
+
+
+fittingSlotFamilyForFlag : Int -> Maybe FittingSlotFamily
+fittingSlotFamilyForFlag flag =
+    fittingSlotFamilies
+        |> List.filter (\family -> familyHoldsFlag family flag)
+        |> List.head
 
 
 {-| The on/off state the client draws on a `Checkbox`, or `Nothing` for anything that is not one.
