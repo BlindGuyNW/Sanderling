@@ -36,6 +36,7 @@ type alias ParsedUserInterface =
     , dronesWindow : Maybe DronesWindow
     , fittingWindow : Maybe FittingWindow
     , probeScannerWindow : Maybe ProbeScannerWindow
+    , hackingWindow : Maybe HackingWindow
     , directionalScannerWindow : Maybe DirectionalScannerWindow
     , stationWindow : Maybe StationWindow
     , inventoryWindows : List InventoryWindow
@@ -465,6 +466,35 @@ type alias ProbeScanResult =
     }
 
 
+{-| The data/relic hacking minigame. The board is a hex grid of `Tile` nodes; the client draws
+the node art, the connection lines and the virus marker in the renderer, so almost nothing about a
+tile's state reaches the tree. The one exception carries the game: a revealed empty node gains a
+child label `distanceIndicatorCont` holding a number that counts down toward the System Core, and
+those markers accumulate as the board opens up. Following the smaller numbers is the game.
+
+Measured against a live client 2026-07-25. What is NOT available, so that it is not looked for
+again: the virus position (renderer-only, and no marker node exists anywhere in the window), which
+tiles are legal moves (the bracketed tiles are byte-identical to distant ones), and any hover
+readout (`tileHintLabel` responds to reveals, never to pointer position, posted or physical).
+-}
+type alias HackingWindow =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , tiles : List HackingTile
+    , virusCoherence : Maybe Int
+    , virusStrength : Maybe Int
+    , lastRevealedNode : Maybe String
+    }
+
+
+{-| One node on the board. `distanceToCore` is present exactly when the node has been revealed and
+turned out to be empty, which is also what makes it a connector the board can be explored from.
+-}
+type alias HackingTile =
+    { uiNode : UITreeNodeWithDisplayRegion
+    , distanceToCore : Maybe Int
+    }
+
+
 type alias DirectionalScannerWindow =
     { uiNode : UITreeNodeWithDisplayRegion
     , scrollNode : Maybe UITreeNodeWithDisplayRegion
@@ -798,6 +828,7 @@ parseUserInterfaceFromUITree uiTree =
     , dronesWindow = parseDronesWindowFromUITreeRoot uiTree
     , fittingWindow = parseFittingWindowFromUITreeRoot uiTree
     , probeScannerWindow = parseProbeScannerWindowFromUITreeRoot uiTree
+    , hackingWindow = parseHackingWindowFromUITreeRoot uiTree
     , directionalScannerWindow = parseDirectionalScannerWindowFromUITreeRoot uiTree
     , stationWindow = parseStationWindowFromUITreeRoot uiTree
     , inventoryWindows = parseInventoryWindowsFromUITreeRoot uiTree
@@ -2727,6 +2758,152 @@ parseProbeScanResult entriesHeaders scanResultNode =
     , cellsTexts = cellsTexts
     , warpButton = warpButton
     }
+
+
+parseHackingWindowFromUITreeRoot : UITreeNodeWithDisplayRegion -> Maybe HackingWindow
+parseHackingWindowFromUITreeRoot uiTreeRoot =
+    uiTreeRoot
+        |> listDescendantsWithDisplayRegion
+        |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "HackingWindow")
+        |> List.head
+        |> Maybe.map
+            (\windowNode ->
+                let
+                    descendants =
+                        windowNode |> listDescendantsWithDisplayRegion
+
+                    descendantsNamed name =
+                        descendants
+                            |> List.filter (.uiNode >> getNameFromDictEntries >> (==) (Just name))
+
+                    {-  The two virus stats sit in their own containers next to an icon, so the
+                        number is taken from the container rather than by position among the
+                        window's labels.
+                    -}
+                    statValueFromContainerName containerName =
+                        descendantsNamed containerName
+                            |> List.head
+                            |> Maybe.map getAllContainedDisplayTextsWithRegion
+                            |> Maybe.withDefault []
+                            |> List.map Tuple.first
+                            |> List.filterMap (String.trim >> String.toInt)
+                            |> List.head
+                in
+                { uiNode = windowNode
+                , tiles =
+                    descendants
+                        |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "Tile")
+                        |> List.map parseHackingTile
+                , virusCoherence = statValueFromContainerName "coherencesCont"
+                , virusStrength = statValueFromContainerName "strengthCont"
+                , lastRevealedNode =
+                    descendantsNamed "tileHintLabel"
+                        |> List.head
+                        |> Maybe.andThen (.uiNode >> getDisplayText)
+                        |> Maybe.andThen hackingNodeNameFromHintText
+                }
+            )
+
+
+parseHackingTile : UITreeNodeWithDisplayRegion -> HackingTile
+parseHackingTile tileNode =
+    { uiNode = tileNode
+    , distanceToCore =
+        tileNode
+            |> listDescendantsWithDisplayRegion
+            |> List.filter (.uiNode >> getNameFromDictEntries >> (==) (Just "distanceIndicatorCont"))
+            |> List.head
+            |> Maybe.andThen (.uiNode >> .dictEntriesOfInterest >> Dict.get "_setText")
+            |> Maybe.andThen
+                (Json.Decode.decodeValue
+                    (Json.Decode.oneOf
+                        [ Json.Decode.int
+                        , Json.Decode.string
+                            |> Json.Decode.andThen
+                                (\asString ->
+                                    case asString |> String.trim |> String.toInt of
+                                        Just parsed ->
+                                            Json.Decode.succeed parsed
+
+                                        Nothing ->
+                                            Json.Decode.fail "not a number"
+                                )
+                        ]
+                    )
+                    >> Result.toMaybe
+                )
+    }
+
+
+{-| The client writes the node's name into `tileHintLabel` wrapped in its own markup, followed by a
+paragraph of instructions. Only the name is wanted; the paragraph explains the game rather than
+saying what happened.
+
+Three forms observed on 2026-07-25, all of which must yield the bare name. The client nests its
+own tags differently between them -- the reveal wraps the bold outside the size, the tooltip wraps
+it inside -- so whatever survives inside the size tag still has markup removed rather than being
+matched against one expected arrangement:
+
+    <right><b><color=white><fontsize=14>Empty Node</fontsize><color></b> <color=…>…</right>
+    <color=white><fontsize=14>Empty Node</fontsize><color>
+    <right><color=white><fontsize=14><b>Encrypted Node</b></fontsize><color> <color=…>…</right>
+
+-}
+hackingNodeNameFromHintText : String -> Maybe String
+hackingNodeNameFromHintText hintText =
+    hintText
+        |> String.split "<fontsize=14>"
+        |> List.drop 1
+        |> List.head
+        |> Maybe.andThen (String.split "</fontsize>" >> List.head)
+        |> Maybe.map (removeMarkupTags >> String.trim)
+        |> Maybe.andThen
+            (\name ->
+                if String.isEmpty name then
+                    Nothing
+
+                else
+                    Just name
+            )
+
+
+{-| Two tiles are neighbours on the hex board when their centres are close enough to be adjacent.
+Measured 2026-07-25 at the client's default board scale: a neighbour along a row is 86 px away and
+a diagonal neighbour about 68 px, while the nearest tile that is NOT a neighbour — two rows up or
+down — is 106 px. Comparing centre distance against a threshold between those survives the client
+laying the board out at a different size, which a hard-coded row/column grid would not.
+-}
+hackingTilesAreAdjacent : HackingTile -> HackingTile -> Bool
+hackingTilesAreAdjacent firstTile secondTile =
+    let
+        firstCenter =
+            firstTile.uiNode.totalDisplayRegion |> centerFromDisplayRegion
+
+        secondCenter =
+            secondTile.uiNode.totalDisplayRegion |> centerFromDisplayRegion
+
+        distanceSquared =
+            ((firstCenter.x - secondCenter.x) ^ 2) + ((firstCenter.y - secondCenter.y) ^ 2)
+    in
+    0 < distanceSquared && distanceSquared < (95 * 95)
+
+
+{-| A revealed empty node is a connector: the nodes adjacent to it are the ones a click can reveal.
+Nodes that are already revealed are not offered again.
+
+Before the first reveal nothing on the board carries an indicator, so this is empty — the starting
+position is drawn only in the renderer and cannot be recovered from the tree. The view says so
+rather than pretending the board has no moves.
+-}
+hackingReachableTiles : HackingWindow -> List HackingTile
+hackingReachableTiles hackingWindow =
+    let
+        revealedTiles =
+            hackingWindow.tiles |> List.filter (.distanceToCore >> (/=) Nothing)
+    in
+    hackingWindow.tiles
+        |> List.filter (.distanceToCore >> (==) Nothing)
+        |> List.filter (\tile -> revealedTiles |> List.any (hackingTilesAreAdjacent tile))
 
 
 parseDirectionalScannerWindowFromUITreeRoot : UITreeNodeWithDisplayRegion -> Maybe DirectionalScannerWindow

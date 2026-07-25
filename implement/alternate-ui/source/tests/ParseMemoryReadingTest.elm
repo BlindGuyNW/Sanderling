@@ -17,7 +17,50 @@ allTests =
         , parse_current_solar_system_from_ui_node_text
         , column_cell_texts_from_row_text
         , alt_text_from_markup
+        , hacking_node_name_from_hint_text
         ]
+
+
+hacking_node_name_from_hint_text : Test.Test
+hacking_node_name_from_hint_text =
+    [ {- 2026-07-25, relic hacking board driven live against the career-mission Training
+         Container - Relic. The client writes this label when a node is revealed, and the settled
+         form carries a paragraph of instructions after the name. Only the name is wanted: the
+         paragraph explains the game rather than saying what just happened.
+      -}
+      ( "<right><b><color=white><fontsize=14>Empty Node</fontsize><color></b> <color=\"0x7FFFFFFF\">This node has been revealed and is empty. It currently serves as a connector, letting you reveal all encrypted nodes which are adjacent by left clicking them.</color></right>"
+      , Just "Empty Node"
+      )
+
+    -- Read about a second after the same click, the label briefly holds the name alone, with the
+    -- bold and the description not yet applied. Both forms have to yield the same name.
+    , ( "<color=white><fontsize=14>Empty Node</fontsize><color>"
+      , Just "Empty Node"
+      )
+
+    {- The tooltip form, describing the node type the pointer is over rather than one just
+       revealed. Note the client nests the bold INSIDE the size tag here and outside it above, so
+       the name cannot be recovered by matching one fixed arrangement of tags. The client's own
+       spelling of "Encryped" is reproduced exactly; it is not a typo in this test.
+    -}
+    , ( "<right><color=white><fontsize=14><b>Encrypted Node</b></fontsize><color> <color=\"0x7FFFFFFF\">Reveal Encryped Node until you reach the System Core. Left click to decrypt the node and reveal the contents.</color></right>"
+      , Just "Encrypted Node"
+      )
+
+    -- Empty before anything has been revealed, which is the state a fresh board opens in.
+    , ( ""
+      , Nothing
+      )
+    ]
+        |> List.map
+            (\( hintText, expectedName ) ->
+                Test.test hintText <|
+                    \_ ->
+                        hintText
+                            |> EveOnline.ParseUserInterface.hackingNodeNameFromHintText
+                            |> Expect.equal expectedName
+            )
+        |> Test.describe "Hacking node name from hint text"
 
 
 alt_text_from_markup : Test.Test

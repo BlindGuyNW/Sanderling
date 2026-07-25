@@ -27,6 +27,7 @@ import Frontend.InspectParsedUserInterface
         )
 import Frontend.View.Common
 import Frontend.View.GenericWindow
+import Frontend.View.HackingWindow
 import Frontend.View.Overview
 import Frontend.View.ShipUI
 import Html
@@ -1440,6 +1441,19 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                                , verticalSpacerFromHeightInEm 0.5
                                ]
                             ++ displayTutorialPointer memoryReading.parsedUserInterface
+                            --  While a hack is open it is the only thing being played, so it comes
+                            --  before the ship and the overview rather than in window order.
+                            ++ (case memoryReading.parsedUserInterface.hackingWindow of
+                                    Nothing ->
+                                        []
+
+                                    Just hackingWindow ->
+                                        [ Frontend.View.HackingWindow.view
+                                            (viewContextFromInputRouteConfig maybeInputRoute 3)
+                                            hackingWindow
+                                        , verticalSpacerFromHeightInEm 0.5
+                                        ]
+                               )
                             ++ (case memoryReading.parsedUserInterface.shipUI of
                                     Nothing ->
                                         []
@@ -1665,6 +1679,9 @@ displayOtherWindows maybeInputRouteConfig typeHierarchy parsedUserInterface =
 
         addressesShownSeparately =
             [ parsedUserInterface.overviewWindows |> List.map .uiNode
+            , parsedUserInterface.hackingWindow
+                |> Maybe.map (.uiNode >> List.singleton)
+                |> Maybe.withDefault []
             ]
                 |> List.concat
                 |> List.map (.uiNode >> .pythonObjectAddress)

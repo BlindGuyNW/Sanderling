@@ -207,6 +207,12 @@ renderTreeNodeFromParsedUserInterface maybeInputRoute uiNodesWithDisplayRegion p
                         , fieldValueSummary = always "..."
                         , fieldValueChildren = treeNodeChildrenFromProbeScannerWindow viewConfig
                         }
+                , parsedUserInterface.hackingWindow
+                    |> fieldFromMaybeInstance
+                        { fieldName = "hackingWindow"
+                        , fieldValueSummary = always "..."
+                        , fieldValueChildren = treeNodeChildrenFromHackingWindow viewConfig
+                        }
                 , parsedUserInterface.directionalScannerWindow
                     |> fieldFromMaybeInstance
                         { fieldName = "directionalScannerWindow"
@@ -1003,6 +1009,36 @@ treeNodeChildrenFromProbeScannerWindow viewConfig probeScannerWindow =
                 , fieldValueChildren = treeNodeChildrenFromProbeScanResult viewConfig
                 }
         ]
+
+
+treeNodeChildrenFromHackingWindow :
+    ViewConfig event
+    -> EveOnline.ParseUserInterface.HackingWindow
+    -> List (TreeViewNode event ParsedUITreeViewPathNode)
+treeNodeChildrenFromHackingWindow viewConfig hackingWindow =
+    treeNodeChildrenFromRecordWithUINode
+        viewConfig
+        hackingWindow.uiNode
+        [ hackingWindow.tiles
+            |> fieldFromListInstance
+                { fieldName = "tiles"
+                , fieldValueChildren = treeNodeChildrenFromHackingTile viewConfig
+                }
+        , hackingWindow.virusCoherence |> fieldFromMaybeInt "virusCoherence"
+        , hackingWindow.virusStrength |> fieldFromMaybeInt "virusStrength"
+        , hackingWindow.lastRevealedNode |> fieldFromMaybeString "lastRevealedNode"
+        ]
+
+
+treeNodeChildrenFromHackingTile :
+    ViewConfig event
+    -> EveOnline.ParseUserInterface.HackingTile
+    -> List (TreeViewNode event ParsedUITreeViewPathNode)
+treeNodeChildrenFromHackingTile viewConfig hackingTile =
+    treeNodeChildrenFromRecordWithUINode
+        viewConfig
+        hackingTile.uiNode
+        [ hackingTile.distanceToCore |> fieldFromMaybeInt "distanceToCore" ]
 
 
 treeNodeChildrenFromProbeScanResult :
