@@ -381,7 +381,23 @@ public class EveOnline64
             "_texturePath",
             "_opacity",
             "_bgColor",
-            "isExpanded");
+            "isExpanded",
+
+            /*
+             * 2026-07-25 Whether a control is greyed out. The client draws this state, but until
+             * these keys were copied the reading showed only the drawing -- a dimmed icon or a
+             * desaturated frame -- which no colour test separates reliably from the several other
+             * reasons the client draws something faintly. Four keys because four widget families
+             * each name it their own way, all four seen on the "Imicus (Frigate): Information"
+             * window: "enabled" on MenuButtonIcon (the window's Previous/Next), "isDisabled" on
+             * SkillPanelToggleButtonLarge (the mastery level tabs), "_enabled" on Checkbox, and
+             * "_interaction_state" on the newer Button family, which carries neither of the first
+             * two -- ApplySkillPointsButton, BuyAndTrainButton, CreateSkillPlanButton.
+             * */
+            "enabled",
+            "isDisabled",
+            "_enabled",
+            "_interaction_state");
 
     struct LocalMemoryReadingTools
     {
@@ -407,11 +423,126 @@ public class EveOnline64
          * 2024-05-26 observed dict entry with key "_setText" pointing to a python object of type "Link".
          * The client used that instance of "Link" to display "Current Solar System" label in the location info panel.
          * */
-        .Add("Link", new Func<ulong, LocalMemoryReadingTools, object>(ReadingFromPythonType_Link));
+        .Add("Link", new Func<ulong, LocalMemoryReadingTools, object>(ReadingFromPythonType_Link))
+        /*
+         * 2026-07-25 observed dict entry with key "_interaction_state" pointing to a python object
+         * of type "set". The newer Button family keeps the state it draws a control in there --
+         * ApplySkillPointsButton, BuyAndTrainButton, CreateSkillPlanButton, UndockButton -- and
+         * carries no "enabled" or "isDisabled" of its own, so without this the reading could not
+         * tell a live button of that family from a greyed one. "frozenset" shares the layout and
+         * appears on the same controls' underlays.
+         * */
+        .Add("set", new Func<ulong, LocalMemoryReadingTools, object>(ReadingFromPythonType_set))
+        .Add("frozenset", new Func<ulong, LocalMemoryReadingTools, object>(ReadingFromPythonType_set))
+        .Add("InteractionState", new Func<ulong, LocalMemoryReadingTools, object>(ReadingFromPythonType_InteractionState));
 
     static object ReadingFromPythonType_str(ulong address, LocalMemoryReadingTools memoryReadingTools)
     {
         return ReadPythonStringValue(address, memoryReadingTools.memoryReader, 0x1000);
+    }
+
+    /*
+    Sources:
+    https://github.com/python/cpython/blob/362ede2232107fc54d406bb9de7711ff7574e1d4/Include/setobject.h
+    https://github.com/python/cpython/blob/362ede2232107fc54d406bb9de7711ff7574e1d4/Objects/setobject.c
+
+    PySetObject repeats the fill/used/mask/table layout PyDictObject uses, at the same offsets, so
+    the slot walk below mirrors `ReadActiveDictionaryEntriesFromDictionaryAddress`. The one
+    difference is the slot itself: a `setentry` is a hash and a key with no value, so slots are two
+    words wide rather than three. `table` usually points into the object's own `smalltable`, which
+    needs no special handling because we follow the pointer either way.
+
+    Elements go back through `GetDictEntryValueRepresentation`, so a set of strings reads as
+    strings, and anything with no reader of its own keeps the generic address representation
+    rather than being dropped.
+    */
+    static object ReadingFromPythonType_set(ulong address, LocalMemoryReadingTools memoryReadingTools)
+    {
+        var setMemory = memoryReadingTools.memoryReader.ReadBytes(address, 0x30);
+
+        if (!(setMemory?.Length == 0x30))
+            return "Failed to read set object memory.";
+
+        var setMemoryAsLongMemory = TransformMemoryContent.AsULongMemory(setMemory.Value);
+
+        var mask = setMemoryAsLongMemory.Span[4];
+        var table = setMemoryAsLongMemory.Span[5];
+
+        var numberOfSlots = (int)mask + 1;
+
+        if (numberOfSlots < 0 || 10_000 < numberOfSlots)
+        {
+            //  Avoid stalling the whole reading process when a single set contains garbage.
+            return "Set too large.";
+        }
+
+        var slotsMemorySize = numberOfSlots * 8 * 2;
+
+        var slotsMemory = memoryReadingTools.memoryReader.ReadBytes(table, slotsMemorySize);
+
+        if (!(slotsMemory?.Length == slotsMemorySize))
+            return "Failed to read set slots memory.";
+
+        var slotsMemoryAsLongMemory = TransformMemoryContent.AsULongMemory(slotsMemory.Value);
+
+        var elements = new List<object>();
+
+        for (var slotIndex = 0; slotIndex < numberOfSlots; ++slotIndex)
+        {
+            var key = slotsMemoryAsLongMemory.Span[slotIndex * 2 + 1];
+
+            if (key == 0)
+                continue;
+
+            var element = memoryReadingTools.GetDictEntryValueRepresentation(key);
+
+            /*
+             * A slot whose element has been removed keeps pointing at the `dummy` singleton
+             * setobject.c uses as a tombstone, so reading every non-zero slot reports emptied sets
+             * as full of "<dummy key>". Dropping it here is what makes an empty set read as empty.
+             * */
+            if (element as string is "<dummy key>")
+                continue;
+
+            elements.Add(element);
+        }
+
+        return elements.ToArray();
+    }
+
+    /*
+    2026-07-25 An element of a Button's "_interaction_state" set. Each is a Python enum member --
+    "_name_ = disabled", "_value_ = 3", "__objclass__" an EnumMeta -- and the client keeps one
+    singleton per state, so the address alone would identify it, but not readably and not across
+    restarts. The instance dict sits at offset 0x10 the same way a UI node's does.
+
+    Reading down to the bare name keeps the set a plain list of strings for everything downstream:
+    a set is unordered, so the only sound question to ask of it is whether a given state is a
+    member, and a list of names is exactly what that needs.
+
+    The whole enum, read off the class's tp_dict 2026-07-25, is
+    `selected | focused | disabled | pressed | hovered`. Four of those five are states a perfectly
+    live control enters, so emptiness of the set means nothing -- only membership of `disabled`
+    does. There is no second inert state to test for alongside it.
+    */
+    static object ReadingFromPythonType_InteractionState(ulong address, LocalMemoryReadingTools memoryReadingTools)
+    {
+        var objectMemory = memoryReadingTools.memoryReader.ReadBytes(address, 0x18);
+
+        if (!(objectMemory?.Length == 0x18))
+            return "Failed to read InteractionState object memory.";
+
+        var instanceDictAddress = BitConverter.ToUInt64(objectMemory.Value.Span[0x10..]);
+
+        var dictionaryEntries = memoryReadingTools.getDictionaryEntriesWithStringKeys(instanceDictAddress);
+
+        if (dictionaryEntries is null)
+            return "Failed to read InteractionState dictionary entries.";
+
+        if (!dictionaryEntries.TryGetValue("_name_", out var nameAddress))
+            return "InteractionState carries no _name_.";
+
+        return memoryReadingTools.GetDictEntryValueRepresentation(nameAddress);
     }
 
     static object ReadingFromPythonType_unicode(ulong address, LocalMemoryReadingTools memoryReadingTools)

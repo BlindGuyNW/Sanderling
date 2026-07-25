@@ -284,16 +284,30 @@ controlElementForInput maybeInputRoute label node canMenu checkState activateInp
                 )
 
         Just inputRoute ->
+            let
+                disabled =
+                    controlIsDisabled node
+            in
             Html.button
-                (HE.onClick (inputRoute node activateInput)
-                    :: tooltipGestureAttribute inputRoute node
-                    :: (if canMenu then
-                            [ HE.preventDefaultOn "contextmenu"
-                                (Json.Decode.succeed ( inputRoute node MouseClickRight, True ))
-                            ]
+                (tooltipGestureAttribute inputRoute node
+                    :: (if disabled then
+                            --  `aria-disabled` rather than the `disabled` property: the property
+                            --  takes the control out of the tab order, so a control the client
+                            --  greys out would go missing from the page rather than announce
+                            --  itself as unavailable, and there would be no way to find out it
+                            --  exists. Nothing is wired to it, so pressing it sends nothing.
+                            [ HA.attribute "aria-disabled" "true" ]
 
                         else
-                            []
+                            HE.onClick (inputRoute node activateInput)
+                                :: (if canMenu then
+                                        [ HE.preventDefaultOn "contextmenu"
+                                            (Json.Decode.succeed ( inputRoute node MouseClickRight, True ))
+                                        ]
+
+                                    else
+                                        []
+                                   )
                        )
                     ++ (case checkState of
                             Nothing ->
@@ -311,6 +325,67 @@ controlElementForInput maybeInputRoute label node canMenu checkState activateInp
                        )
                 )
                 [ Html.text label ]
+
+
+{-| Whether the client holds a control to be disabled, and so inert to clicks.
+
+The client states this outright, but names it differently in each widget family, so all four are
+asked and any one of them answering is taken. All four measured on the
+`Imicus (Frigate): Information` window, 2026-07-25:
+
+  - `enabled` on the `ButtonIcon` family -- `0` on the window's `Previous` and `Next`, with no
+    info history behind them yet, and `True` or `1` on every other icon button in the reading.
+    Both spellings occur, hence `boolOrInt`.
+  - `isDisabled` on `SkillPanelToggleButtonLarge`, the mastery level tabs. `False` on all six,
+    including the levels not yet reached, which are dimmed but perfectly clickable.
+  - `_enabled` on `Checkbox`. `True` on `Filter out acquired skills`.
+  - `_interaction_state` on the newer `Button` family, which carries none of the first three.
+
+`_interaction_state` is a Python *set* of state flags, read as a list of member names. The whole
+enum is `selected | focused | disabled | pressed | hovered`, so four of its five members appear on
+controls that are perfectly alive -- whether the set is empty says nothing, and only membership of
+`disabled` does. `Apply Skill Points` holds it, dead because the character's unallocated skill
+points fall short of the 17,300 the panel asks for; `Buy and train`, `Create Skill Plan` and
+`Undock` hold empty sets.
+
+A control carrying none of the four is reported enabled. That is the safe direction: announcing a
+dead control as live costs a press that does nothing, which is what happened before any of this
+existed, whereas announcing a live control as dead hides it.
+
+An earlier version of this read the colours the client draws instead, because these keys were not
+in `DictEntriesOfInterestKeys`. Do not go back to that. Dimming is drawn for at least three
+unrelated reasons -- disabled, not-yet-reached, and plain decoration -- and no threshold separates
+them; it marked the checkbox and the side navigation's ship header, both live.
+
+-}
+controlIsDisabled : UITreeNodeWithDisplayRegion -> Bool
+controlIsDisabled node =
+    let
+        dictEntry key decoder =
+            node.uiNode.dictEntriesOfInterest
+                |> Dict.get key
+                |> Maybe.andThen (Json.Decode.decodeValue decoder >> Result.toMaybe)
+
+        boolOrInt =
+            Json.Decode.oneOf
+                [ Json.Decode.bool
+                , Json.Decode.int |> Json.Decode.map (\asInt -> asInt /= 0)
+                ]
+
+        --  An element with no reader of its own stays an object; it is not `disabled`, and
+        --  decoding the list must not fail because of it.
+        interactionStateNames =
+            Json.Decode.list
+                (Json.Decode.oneOf [ Json.Decode.string, Json.Decode.succeed "" ])
+    in
+    [ dictEntry "enabled" boolOrInt |> Maybe.map not
+    , dictEntry "isDisabled" boolOrInt
+    , dictEntry "_enabled" boolOrInt |> Maybe.map not
+    , dictEntry "_interaction_state" interactionStateNames
+        |> Maybe.map (List.member "disabled")
+    ]
+        |> List.filterMap identity
+        |> List.any identity
 
 
 entryHtml : Context event -> Entry -> Html.Html event
