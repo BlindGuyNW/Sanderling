@@ -1,8 +1,17 @@
 # Plan: replace the Pine backend with a .NET host
 
-Status: **not started.** Written 2026-07-26 from measurements taken the same day. Phase 1 was
-approved; phases 2-4 follow from it. This file is the handoff: it should be enough to resume with
-no other context.
+Status: **phases 1 and 2 done, 2026-07-26** — the host lives in `implement/alternate-ui-host/`,
+started with `./start-alternate-ui-host.ps1` on port 8080. Both were verified against the live
+client the same day: whole-tree read **305-339 ms** end-to-end through the harness (was ~1.9-5 s),
+`l_menu` subtree read **9 ms** (was ~250 ms), a posted click toggled a window open and closed, and
+a hover produced a `TooltipPanel`. Phase 2 shipped with phase 1 because the message path is a
+verbatim copy with no external dependencies, and without it the unchanged frontend on 8080 would
+fail every click; the foreground branch was dropped, not ported (the host answers
+`FailedToBringWindowToFront` if asked for it). Remaining: the browser render-time measurement
+(Chrome extension was not connected when phases 1-2 landed), then phases 3 and 4.
+
+Written 2026-07-26 from measurements taken the same day. This file is the handoff: it should be
+enough to resume with no other context.
 
 ## Why
 
@@ -185,8 +194,21 @@ port 80 at any point; pine 0.4.21 stays installed at `C:\Users\Shadow\pine\v0.4.
 
 ## Open questions
 
-- Does `pine make` expose a `--debug` build for `/with-inspector`? If not, decide whether the
-  inspector variant is worth keeping.
-- `SearchUIRootAddress` runs on a background `Task` in the `.csx` with a dictionary of in-flight
-  searches. Confirm the port keeps the same poll-until-completed contract the frontend expects.
+- ~~Does `pine make` expose a `--debug` build for `/with-inspector`?~~ **Yes** — the start script
+  builds both variants and the host serves the debug one at `/with-inspector`.
+- ~~Confirm the port keeps the same poll-until-completed contract for `SearchUIRootAddress`.~~
+  Kept: same background `Task`, same in-flight dictionary (now a `ConcurrentDictionary` because
+  Kestrel handles requests concurrently), same `InProgress`/`Completed` stages.
 - Whether to keep Newtonsoft or move to `System.Text.Json` (the reader already uses the latter).
+  Kept Newtonsoft for phases 1-2: the response shape (nulls omitted, public fields serialized)
+  matches the .csx byte-for-byte that way. Revisit in phase 3 at the earliest.
+
+## Note found while porting (phase 1)
+
+The plan said phase 1 "needs no frontend change at all" because the host wraps responses in the
+envelope shape. True, but the incoming direction also needed work the plan did not spell out: the
+unchanged frontend posts the Pine-GENERATED encoding of `RequestFromClient` (tags array-wrapped,
+`{"VirtualKeyCodeFromInt":[n]}` instead of `{"virtualKeyCode":n}`, `{"Effect":[...]}` instead of
+`{"effect":...}`), which differs from the hand-written inner codec the `.csx` consumed. The
+translation lives in `EnvelopeAdapter` in `Program.cs` and dies in phase 3 with the rest of the
+envelope.

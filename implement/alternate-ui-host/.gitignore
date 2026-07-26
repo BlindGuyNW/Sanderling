@@ -1,0 +1,5 @@
+/obj/
+/bin/
+
+# Built by start-alternate-ui-host.ps1 (pine make); not source.
+/wwwroot/

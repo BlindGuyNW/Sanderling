@@ -56,7 +56,16 @@ function Invoke-VolatileRequest {
         throw "request '$Tag' to $script:AlternateUiApiUri failed: $($_.Exception.Message)"
     }
 
-    $outer = [System.Text.Encoding]::UTF8.GetString($response.Content) | ConvertFrom-Json
+    <#
+    The pine backend sent no content type, which makes Invoke-WebRequest hand back bytes;
+    the dotnet host declares application/json, which makes it hand back a string. Take both.
+    #>
+    $content = if ($response.Content -is [byte[]]) {
+        [System.Text.Encoding]::UTF8.GetString($response.Content)
+    }
+    else { $response.Content }
+
+    $outer = $content | ConvertFrom-Json
     $complete = $outer.RunInVolatileProcessCompleteResponse[0]
 
     if ($complete.exceptionToString.Just) {

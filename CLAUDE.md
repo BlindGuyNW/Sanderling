@@ -39,6 +39,14 @@ cd implement/alternate-ui ; ./run-alternate-ui.ps1
 cd implement/alternate-ui/source ; pine make src/Frontend/Main.elm --output=./alternate-ui.html
 ```
 
+**A .NET replacement for the Pine backend is being phased in** — see
+`implement/alternate-ui/PLAN-dotnet-host.md` for status and phases. `./start-alternate-ui-host.ps1`
+builds the frontend with `pine make` and serves it from an ASP.NET host in
+`implement/alternate-ui-host/` on port 8080 (a direct project reference to the reader — no hash
+pinning, no prebuilt DLL copy). Whole-tree reads through it take ~0.3 s versus ~2-5 s through
+pine. Until plan phase 4, port 80 / `start-alternate-ui.ps1` remains the pine instance and the
+default for routine rounds.
+
 Elm unit tests live in `implement/alternate-ui/source/tests/ParseMemoryReadingTest.elm` (elm-explorations/test). No CI workflow runs them and the repo pins no test-runner config; run them with an Elm test runner from `implement/alternate-ui/source`. The only automated check on the Elm code is that `pine make` on the frontend succeeds.
 
 CLI usage of the built tool:
