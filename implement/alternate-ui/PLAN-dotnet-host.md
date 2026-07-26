@@ -7,8 +7,16 @@ client the same day: whole-tree read **305-339 ms** end-to-end through the harne
 a hover produced a `TooltipPanel`. Phase 2 shipped with phase 1 because the message path is a
 verbatim copy with no external dependencies, and without it the unchanged frontend on 8080 would
 fail every click; the foreground branch was dropped, not ported (the host answers
-`FailedToBringWindowToFront` if asked for it). Remaining: the browser render-time measurement
-(Chrome extension was not connected when phases 1-2 landed), then phases 3 and 4.
+`FailedToBringWindowToFront` if asked for it). Remaining: phases 3 and 4.
+
+Browser cost, measured in an active tab against the running page later the same day: transfer of
+the 1.38 MB response **234-249 ms**, then **one ~115 ms long task** per reading (JSON decode +
+Elm processing + view; Elm defers it off the XHR load event, and the visible page usually diffs
+to zero DOM mutations). So a poll cycle is now roughly 1 s tick + ~240 ms transfer + ~115 ms
+browser work: **the 1-second poll tick in `Frontend/Main.elm` is the largest term**, not the
+backend and not the browser. Tightening the tick (or switching to request-on-response) is worth
+considering during phase 3. Note the host served two pages polling concurrently during this
+measurement without the transfer time moving.
 
 Written 2026-07-26 from measurements taken the same day. This file is the handoff: it should be
 enough to resume with no other context.
