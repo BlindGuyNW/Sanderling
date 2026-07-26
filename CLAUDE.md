@@ -7,9 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Sanderling reads the UI tree out of the memory of a running 64-bit EVE Online client process (read-only — it never injects into or writes to the game client). Two independently built components live here:
 
 - `implement/read-memory-64-bit/` — C# / .NET 9 (Windows-only). Library + CLI (`read-memory-64-bit.exe`) that walks the game client's CPython objects and emits the UI tree as JSON.
-- `implement/alternate-ui/` — Elm application (backend web service + browser frontend) that consumes that JSON, parses it into game-domain types, and renders it as HTML. Built and run with the [Pine](https://github.com/pine-vm/pine) tool, not with `elm make`.
-
-The two are **not** linked by a project reference. The alternate UI loads the C# assemblies at runtime, pinned by content hash — in this fork that hash resolves to a locally-built DLL committed under `implement/read-memory-64-bit/prebuilt/`, so a reader change *does* reach the UI, but only after you rebuild, refresh that file, and update the hash. See "Changing the C# reader" below; getting this wrong fails silently.
+- `implement/alternate-ui/` — the Elm frontend (browser page) that consumes that JSON, parses it into game-domain types, and renders it as HTML. Compiled to a standalone HTML file with the [Pine](https://github.com/pine-vm/pine) tool's `pine make` (the stock `elm` binary is not installed here); Pine is a **build tool only** in this fork.
+- `implement/alternate-ui-host/` — the ASP.NET backend serving that frontend and `/api`: UI-root search, memory reads, and input effects. It references the reader as an ordinary **project reference**, so a reader change reaches the UI by rebuilding and restarting — no pinning, no ceremony. It replaced the Pine web service in 2026-07 (`implement/alternate-ui/PLAN-dotnet-host.md` records why and what remains); the old backend files (`Backend/Main.elm`, `EveOnline/VolatileProcess.csx`) are still in the tree as the rollback path until plan phase 3 deletes them, but nothing runs them.
 
 ## Build, test, run
 
@@ -21,31 +20,25 @@ dotnet test    ./implement/read-memory-64-bit/read-memory-64-bit.csproj --logger
 dotnet publish ./implement/read-memory-64-bit/read-memory-64-bit.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:IncludeAllContentForSelfExtract=true -p:PublishReadyToRun=true --output ./publish
 ```
 
-`implement/read-memory-64-bit/build.bat` is a shorthand for `dotnet publish -p:Platform=x64`. CI (`.github/workflows/test-and-publish.yml`) additionally publishes a separate-assemblies variant — that is the artifact the alternate UI *would* consume from a release, but this fork pins a committed local build instead; see "Changing the C# reader" below.
+`implement/read-memory-64-bit/build.bat` is a shorthand for `dotnet publish -p:Platform=x64`. CI (`.github/workflows/test-and-publish.yml`) additionally publishes a separate-assemblies variant for upstream's release flow; nothing in this fork consumes it.
 
-Alternate UI (requires the `pine` executable on PATH — download from the pine-vm releases page; needs the .NET 9 runtime):
+Alternate UI (requires `pine` on PATH for the frontend compile — download from the pine-vm releases page; needs the .NET 9 SDK):
 
 ```powershell
-# preferred: stops any instance on the port, deploys, and waits until the server actually answers
-./start-alternate-ui.ps1                  # port 80
-./start-alternate-ui.ps1 -Port 8080       # a second instance, to try a change without disturbing the first
-./start-alternate-ui.ps1 -Stop            # stop it again
-
-# upstream's original one-liner (no readiness check, must be run from that directory)
-cd implement/alternate-ui ; ./run-alternate-ui.ps1
+# builds the frontend (pine make) and the host (dotnet build), then serves both
+./start-alternate-ui.ps1                     # port 80
+./start-alternate-ui.ps1 -SkipFrontendBuild  # host-only change: skips the ~1 min pine make
+./start-alternate-ui.ps1 -Port 8080          # a second instance, to try a change without disturbing the first
+./start-alternate-ui.ps1 -Stop               # stop it again
 # frontend at http://localhost:80/ ; http://localhost:80/with-inspector enables the Elm debugger
 
 # compile just the frontend to a standalone HTML file (what CI checks)
 cd implement/alternate-ui/source ; pine make src/Frontend/Main.elm --output=./alternate-ui.html
 ```
 
-**A .NET replacement for the Pine backend is being phased in** — see
-`implement/alternate-ui/PLAN-dotnet-host.md` for status and phases. `./start-alternate-ui-host.ps1`
-builds the frontend with `pine make` and serves it from an ASP.NET host in
-`implement/alternate-ui-host/` on port 8080 (a direct project reference to the reader — no hash
-pinning, no prebuilt DLL copy). Whole-tree reads through it take ~0.3 s versus ~2-5 s through
-pine. Until plan phase 4, port 80 / `start-alternate-ui.ps1` remains the pine instance and the
-default for routine rounds.
+A whole-tree reading through the host takes ~0.3 s (the retired Pine backend took ~2-5 s), the
+browser spends ~115 ms rendering it, and the host restarts in about a second — so the deploy
+loop for a backend change is seconds, and for a view change it is the `pine make` minute.
 
 Elm unit tests live in `implement/alternate-ui/source/tests/ParseMemoryReadingTest.elm` (elm-explorations/test). No CI workflow runs them and the repo pins no test-runner config; run them with an Elm test runner from `implement/alternate-ui/source`. The only automated check on the Elm code is that `pine make` on the frontend succeeds.
 
@@ -77,12 +70,15 @@ C# side (`implement/read-memory-64-bit/`):
 - `IMemoryReader` has two implementations: `MemoryReaderFromLiveProcess` (ReadProcessMemory) and `MemoryReaderFromProcessSample` (replay from a saved sample). Everything above the interface works identically for both.
 - `Program.cs` is CLI wiring only, plus the `UITreeNode` record and screenshot helpers. `WinApi.cs`, `ProcessSample.cs`, `ZipArchive.cs` are support.
 
+Backend (`implement/alternate-ui-host/`, ASP.NET minimal API):
+- `VolatileHost.cs` — the request handlers ported from the retired `VolatileProcess.csx`: `ListGameClientProcesses`, `SearchUIRootAddress` (background task; the frontend polls until completed), `ReadFromWindow`, and effect sequences. Calls `read_memory_64_bit` through the project reference.
+- `InputViaWindowMessages.cs` — posts `WM_MOUSE*` / `WM_KEY*` to the game window; see "Input to the game client" below. The focus-stealing foreground path was deliberately not ported.
+- `Program.cs` — routes, plus `EnvelopeAdapter`: until plan phase 3, the frontend still posts the Pine-*generated* encoding of the request (tags array-wrapped, `{"VirtualKeyCodeFromInt":[n]}`), which the adapter translates to the DTOs; responses are wrapped back in `RunInVolatileProcessCompleteResponse`.
+
 Elm side (`implement/alternate-ui/source/src/`):
-- `Backend/Main.elm` — Pine web service. Spawns a *volatile process* from `EveOnline/VolatileProcess.csx` and proxies `/api/` requests from the frontend into it.
-- `EveOnline/VolatileProcess.csx` — C# script executed inside the Pine runtime on the machine with the game client. It calls into the hash-pinned `read_memory_64_bit` assemblies (`EveOnline64.ReadUITreeFromAddress`, `MemoryReaderFromLiveProcess`) and handles UI-root search, reading, and mouse/keyboard effects. It has **two input paths**, selected by the `bringWindowToForeground` flag on the request — see "Input to the game client" below.
-- `EveOnline/VolatileProcessInterface.elm` — the hand-written request/response contract with the `.csx` script; the JSON encoders/decoders on both sides must be edited together.
-- `InterfaceToFrontendClient.elm` — the frontend↔backend contract; its JSON converters are *generated* by the Pine compiler (`CompilationInterface/GenerateJsonConverters.elm` contains placeholder bodies that the compiler replaces — do not implement them by hand).
-- `CompilationInterface/*.elm` — Pine compiler hooks generally: `SourceFiles.elm` embeds `VolatileProcess.csx` as a string, `ElmMake.elm` embeds the compiled frontend HTML into the backend. The `"The compiler replaces this declaration."` bodies are intentional.
+- `EveOnline/VolatileProcessInterface.elm` — the hand-written inner request/response contract; its decoders parse what `VolatileHost.cs` serializes, so the two must be edited together.
+- `InterfaceToFrontendClient.elm` + `CompilationInterface/*.elm` — the envelope types and Pine compiler hooks (`GenerateJsonConverters` placeholder bodies are intentional — the compiler replaces them; the frontend build still uses them until plan phase 3 collapses the envelope).
+- `Backend/Main.elm` + `EveOnline/VolatileProcess.csx` — the retired Pine backend and its volatile-process script; kept only as the rollback path, do not extend them.
 - `EveOnline/ParseUserInterface.elm` (~3.7k lines) is where nearly all game-domain knowledge lives: `ParsedUserInterface` with `ShipUI`, `OverviewWindow`, `InventoryWindow`, `DronesWindow`, `Neocom`, etc., built by locating nodes by `pythonObjectTypeName` / dict entries and computing display regions for mouse targeting.
 
 ## Conventions that matter here
@@ -93,42 +89,25 @@ every window renders through the generic shell whether or not it has a specializ
 come from the client rather than hand-written tables, and heading levels express nesting. Read it
 before adding or changing a view.
 
-**Changing the C# reader reaches the alternate UI without cutting a release.** This is the single most misleading thing to get wrong here, so it is spelled out: `VolatileProcess.csx` pins the reader assembly *by content hash only*, and that hash currently resolves to a **locally-built assembly committed at `implement/read-memory-64-bit/prebuilt/read-memory-64-bit.dll`**, not to anything published. `start-alternate-ui.ps1` hashes that file and copies it into pine's blob library (`%LOCALAPPDATA%/pine/.cache/blob-library/by-sha256/`) before every deploy, which is what makes the `#r` resolve. The upstream release URL is kept only as a `Superseded release pin:` comment above it.
+**Changing the C# reader is rebuild-and-restart.** The host references the reader project directly, so a reader change — for example adding a key to `DictEntriesOfInterestKeys` so a new client property reaches the Elm side — ships with `./start-alternate-ui.ps1 -SkipFrontendBuild` (which rebuilds both projects). The hash-pinning / prebuilt-DLL ritual this section used to describe died with the Pine backend; if you are reading old commits or the retired `VolatileProcess.csx`, that is what its `#r "sha256:..."` lines were about.
 
-So the loop for a reader change — for example adding a key to `DictEntriesOfInterestKeys` so a new client property reaches the Elm side — is:
-
-```powershell
-dotnet build ./implement/read-memory-64-bit/read-memory-64-bit.csproj -c Release
-Copy-Item ./implement/read-memory-64-bit/bin/Release/net9.0-windows/read-memory-64-bit.dll `
-          ./implement/read-memory-64-bit/prebuilt/read-memory-64-bit.dll -Force
-(Get-FileHash ./implement/read-memory-64-bit/prebuilt/read-memory-64-bit.dll -Algorithm SHA256).Hash.ToLower()
-#  then put that hash in the `#r "sha256:..."` line in VolatileProcess.csx, and redeploy
-./start-alternate-ui.ps1
-```
-
-Commit the rebuilt `prebuilt/*.dll` together with the `.csx` pin, or a fresh clone deploys a reader that disagrees with the source. Skipping either the copy or the hash edit fails *silently and misleadingly*: the previous assembly still resolves, so the deploy succeeds and the UI works — it just never sees the new dict key, which reads as "the client doesn't expose that" rather than "you didn't ship the reader".
-
-The CLI (`read-memory-64-bit.exe`) runs straight from `bin/`, so it shows a reader change one build earlier than the deployed UI does. That makes it the right tool for measuring a new key before wiring anything: it also keeps `otherDictEntriesKeys`, which the alternate UI's path strips via `WithOtherDictEntriesRemoved()`.
+The CLI (`read-memory-64-bit.exe`) is the right tool for measuring a new key before wiring anything: it keeps `otherDictEntriesKeys`, which the alternate UI's path strips via `WithOtherDictEntriesRemoved()`.
 
 Keep these in sync when bumping versions:
 - `Program.cs` → `AppVersionId`
 - `Common/App.elm` → `versionId`
-- `VolatileProcess.csx` → assembly hash (plus the release URL comment, if a release is ever pinned again)
-- `implement/alternate-ui/README.md` and `.github/workflows/build-alternate-ui-frontend-html.yml` → the pinned commit hash / pine version used in the documented `--deploy=` command (see commit `b9fbc74`)
+- `implement/alternate-ui/README.md` and `.github/workflows/build-alternate-ui-frontend-html.yml` → the pinned commit hash / pine version used in the documented commands (see commit `b9fbc74`)
 
 **Parsing fixes are driven by user-reported samples.** The recurring change shape (e.g. commit `d2ffa5b`) is: a player reports the client showing a form the parser doesn't handle → adjust the parse function in `ParseUserInterface.elm` → add the exact observed string as a case in `tests/ParseMemoryReadingTest.elm`, with a comment giving the date and the forum/session-recording source. Follow that comment convention; the existing cases document real client variations (thousands separators `. , space ’ '`, localized modifier keys `STRG`/`UMSCH`, both `<url=…>` and `<a href=…>` markup) and must not be regressed.
 
 **Hidden means alpha, not absence.** The client often hides UI by making it transparent while leaving the nodes in the tree: `SelectionIndicatorLine` by color alpha, the notification badge and its settings button by `_opacity` ≈ 0. A region-only visibility check therefore announces invisible controls, and clicking one hits whatever is underneath. Gate on `_opacity` / color alpha too — see `subtreeShowsSelectionIndicator` and `parseNotificationsWidget`.
 
-**Input to the game client.** `VolatileProcess.csx` has two ways to deliver an effect, chosen by the request's `bringWindowToForeground` flag:
-
-- `true` — the legacy path: `Sanderling.Motor.WindowMotor` + `InputSimulator`, which calls `SetForegroundWindow` and moves the real cursor. This steals keyboard focus, which makes the alternate UI unusable alongside a screen reader.
-- `false` — `InputViaWindowMessages`, which posts `WM_MOUSE*` / `WM_KEY*` straight to the window. No focus change and no cursor motion. This is what the frontend uses.
+**Input to the game client.** The host delivers every effect through `InputViaWindowMessages` (`implement/alternate-ui-host/InputViaWindowMessages.cs`), which posts `WM_MOUSE*` / `WM_KEY*` straight to the window: no focus change and no cursor motion, which is what keeps the alternate UI usable alongside a screen reader. (The old focus-stealing foreground path — `WindowMotor` + `InputSimulator`, selected by `bringWindowToForeground = true` — was dropped in the port; the host answers `FailedToBringWindowToFront` if asked for it.)
 
 Five non-obvious constraints on the message path, all established by measuring against a live client — do not "simplify" them away:
 
 1. Mouse messages are processed **only while the real cursor is physically inside the window's client area**. Focus is irrelevant, cursor geometry is not; parked on the title bar or window border, every click is silently dropped. `EnsureCursorInsideClientArea` handles this and is a no-op in the common case. Keyboard is *not* subject to this.
-2. A button-down posted immediately after a move is discarded — the client hit-tests against the pointer position from its previous frame. 0 ms fails; ≥60 ms works. The wait lives in the `.csx`, not in the caller, because `effectSequenceSpacingMilliseconds` in `Frontend/Main.elm` is only 30 ms.
+2. A button-down posted immediately after a move is discarded — the client hit-tests against the pointer position from its previous frame. 0 ms fails; ≥60 ms works. The wait lives in the host, not in the caller, because `effectSequenceSpacingMilliseconds` in `Frontend/Main.elm` is only 30 ms.
 3. The client derives the typed character from `WM_KEYDOWN` itself, so **do not also post `WM_CHAR`** — every character is entered twice.
 4. Drags (sliders, item moves) are press → midpoint move → release with ~150 ms between steps; a plain posted click on a slider handle is eaten by the client's double-click filtering.
 5. A posted Escape does not close a context menu — a click elsewhere does.
@@ -147,7 +126,7 @@ Compare-WindowSignature -Before $before -After (Get-WindowSignature -Tree (Read-
 
 The underlying protocol, if you need it directly: `POST http://localhost/api` on the running backend is a full control loop — the same endpoint the frontend uses. Pine's generated converters encode a tag as `{"Tag":[arg, ...]}` (arguments always array-wrapped), and `returnValueToString.Just[0]` is itself a JSON string needing a second parse. Sequence: `ListGameClientProcessesRequest` → `SearchUIRootAddress` (poll until completed) → `ReadFromWindow`. Useful oracle for "did that effect land": the count and rects of `WindowUnderlay` nodes, or `l_menu`'s descendants for context menus.
 
-`ReadFromWindow`'s `uiRootAddress` is not required to be the UI root — pass any node's `pythonObjectAddress` from a previous reading and it reads back that subtree alone. This is the difference between a usable answer and an unusable one, because a whole reading is expensive: measured 2026-07-26 against a live client, the whole tree is 1.25 MB and takes **4.0–5.1 seconds**, while the `l_menu` layer alone is 40 KB and takes **~250 ms**. The alternate UI's tooltip inspection is built on this (`tooltipLayerAddressFromReading` in `Frontend/Main.elm`). Two consequences worth holding on to: anything that has to answer a keypress should read a subtree rather than the tree, and the whole page is only ever about five seconds fresh — the volatile process serves one request at a time, and with a one-second poll tick against a 4.5-second reading it is busy essentially always, so any request of yours can queue behind one. To test a `.csx` change without disturbing a running instance, deploy a second one: `pine run-server --process-store=<tmp> --admin-urls="http://*:4100" --public-urls="http://*:8080" --delete-previous-process --deploy=./source/`.
+`ReadFromWindow`'s `uiRootAddress` is not required to be the UI root — pass any node's `pythonObjectAddress` from a previous reading and it reads back that subtree alone. A whole reading is still the expensive shape: measured 2026-07-26 against a live client through the host, the whole tree (~1.4 MB) takes **~0.3 s** end-to-end while the `l_menu` layer alone takes **~9 ms** — so anything that has to answer a keypress should still read a subtree rather than the tree. The alternate UI's tooltip inspection is built on this (`tooltipLayerAddressFromReading` in `Frontend/Main.elm`). Unlike the old volatile process, the host serves requests concurrently, so your probe requests do not queue behind the page's poll; page freshness is now bounded by the frontend's **one-second poll tick** (~1.3 s worst case), not by the backend. To test a host change without disturbing a running instance, start a second one: `./start-alternate-ui.ps1 -Port 8080 -SkipFrontendBuild`.
 
 **Line endings.** `.editorconfig` sets `end_of_line = lf` for all files, and CI sets `core.autocrlf false` before checkout. On Windows, avoid tooling that rewrites files to CRLF.
 

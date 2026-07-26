@@ -1,15 +1,18 @@
 <#
 .SYNOPSIS
-Deploy and run the alternate UI, reporting in plain text when it is actually ready to use.
+Build and run the alternate UI, reporting in plain text when it is actually ready to use.
 
 .DESCRIPTION
-Wraps `pine run-server`. Compared to implement/alternate-ui/run-alternate-ui.ps1 this script:
+The backend is the .NET host in implement/alternate-ui-host/ (it replaced the Pine web service
+in 2026-07 — see implement/alternate-ui/PLAN-dotnet-host.md). This script:
 
-  - works from any directory (paths resolve relative to the script itself)
+  - compiles the Elm frontend to HTML with `pine make` (pine is only a build tool here;
+    nothing of Pine runs at serve time) - both the normal and the --debug variant
+  - builds the host with `dotnet build` and starts it hidden, logging to a file
   - stops an instance already listening on the port instead of colliding with it
-  - waits for the server to answer HTTP and prints a clear READY line, because the
-    deploy compiles the Elm backend and can sit silent for a minute or more
-  - surfaces the pine log if startup fails, rather than leaving you guessing
+  - waits until the server answers HTTP and prints a clear READY line
+  - binds localhost only: this endpoint can send input to the game client, so it must
+    not be reachable from the network
 
 .PARAMETER Port
 Port to serve the UI on. Default 80.
@@ -17,13 +20,14 @@ Port to serve the UI on. Default 80.
 .PARAMETER Stop
 Stop whatever is serving on the port and exit without starting anything.
 
-.PARAMETER TimeoutSeconds
-How long to wait for the server to come up before giving up. Default 300.
+.PARAMETER SkipFrontendBuild
+Reuse the previously built frontend HTML instead of running `pine make` again. Saves about
+a minute when only the C# host changed.
 
 .EXAMPLE
 ./start-alternate-ui.ps1
 .EXAMPLE
-./start-alternate-ui.ps1 -Port 8080
+./start-alternate-ui.ps1 -Port 8080       # a second instance, to try a change without disturbing the first
 .EXAMPLE
 ./start-alternate-ui.ps1 -Stop
 #>
@@ -31,23 +35,17 @@ How long to wait for the server to come up before giving up. Default 300.
 param(
     [int]$Port = 80,
     [switch]$Stop,
-    [int]$TimeoutSeconds = 300
+    [switch]$SkipFrontendBuild,
+    [int]$TimeoutSeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
 
-$sourcePath = Join-Path $PSScriptRoot 'implement/alternate-ui/source'
+$hostProjectPath = Join-Path $PSScriptRoot 'implement/alternate-ui-host'
+$frontendSourcePath = Join-Path $PSScriptRoot 'implement/alternate-ui/source'
+$wwwrootPath = Join-Path $hostProjectPath 'wwwroot'
 $logPath = Join-Path $env:TEMP "sanderling-alternate-ui-$Port.log"
 $url = "http://localhost:$Port/"
-
-<#
-Give each port its own process store. Without this, pine falls back to one shared default
-store, so a second instance on another port collides with the first instead of running
-alongside it - which defeats the point of -Port for trying a change without disturbing a
-working instance. The store only holds deployment state and we redeploy from source every
-time, so there is nothing here worth preserving between runs.
-#>
-$storePath = Join-Path $env:LOCALAPPDATA "Sanderling/alternate-ui-store-$Port"
 
 function Get-ListenerProcess {
     param([int]$OnPort)
@@ -79,79 +77,79 @@ if ($Stop) {
     return
 }
 
-if (-not (Get-Command pine -ErrorAction SilentlyContinue)) {
-    Write-Error "'pine' is not on PATH. Download it from https://github.com/pine-vm/pine/releases (needs the .NET runtime)."
-    return
+$frontendHtml = Join-Path $wwwrootPath 'alternate-ui.html'
+$frontendDebugHtml = Join-Path $wwwrootPath 'alternate-ui-debug.html'
+
+if ($SkipFrontendBuild -and -not (Test-Path $frontendHtml)) {
+    Write-Host "No previously built frontend at $frontendHtml - building it after all."
+    $SkipFrontendBuild = $false
 }
 
-if (-not (Test-Path $sourcePath)) {
-    Write-Error "Cannot find the app source at $sourcePath"
-    return
-}
+if (-not $SkipFrontendBuild) {
+    if (-not (Get-Command pine -ErrorAction SilentlyContinue)) {
+        Write-Error "'pine' is not on PATH; it is needed to compile the Elm frontend. Download it from https://github.com/pine-vm/pine/releases"
+        return
+    }
 
-<#
-VolatileProcess.csx references read-memory-64-bit by content hash. Because this fork's build is
-not in any published release, pine has no URL to fetch it from - it can only find it in its local
-blob library. Copy the committed assembly there, keyed by its own hash, so a cleared blob cache
-self-heals on the next deploy instead of failing to read with an opaque "assembly not found".
-This whole block goes away once a release carrying ReadPythonTypeHierarchy is pinned instead.
-#>
-$prebuiltReader = Join-Path $PSScriptRoot 'implement/read-memory-64-bit/prebuilt/read-memory-64-bit.dll'
-if (Test-Path $prebuiltReader) {
-    $blobLibrary = Join-Path $env:LOCALAPPDATA 'pine/.cache/blob-library/by-sha256'
-    $readerHash = (Get-FileHash $prebuiltReader -Algorithm SHA256).Hash.ToLower()
-    $blobPath = Join-Path $blobLibrary $readerHash
-    if (-not (Test-Path $blobPath)) {
-        New-Item -ItemType Directory -Force $blobLibrary | Out-Null
-        Copy-Item $prebuiltReader $blobPath -Force
-        Write-Host "Placed the local read-memory-64-bit build in pine's blob library ($readerHash)."
+    New-Item -ItemType Directory -Force $wwwrootPath | Out-Null
+
+    Write-Host "Compiling the Elm frontend (pine make, normal + debug) - takes about a minute..."
+    Push-Location $frontendSourcePath
+    try {
+        pine make src/Frontend/Main.elm --output=$frontendHtml
+        if ($LASTEXITCODE -ne 0) { throw "pine make failed with exit code $LASTEXITCODE" }
+        pine make src/Frontend/Main.elm --debug --output=$frontendDebugHtml
+        if ($LASTEXITCODE -ne 0) { throw "pine make --debug failed with exit code $LASTEXITCODE" }
+    }
+    finally {
+        Pop-Location
     }
 }
 
+#  Stop before building: a running instance holds a lock on the exe the build overwrites.
 Stop-Existing -OnPort $Port
 
-Write-Host ""
-Write-Host "Deploying from $sourcePath"
-Write-Host "Log: $logPath"
-Write-Host "Compiling - this normally takes one to two minutes."
-Write-Host ""
+Write-Host "Building the host..."
+dotnet build (Join-Path $hostProjectPath 'alternate-ui-host.csproj') -c Release --nologo -v quiet
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "dotnet build failed with exit code $LASTEXITCODE"
+    return
+}
+
+<#
+Run each port from its own copy of the build output. Instances must not run from bin/
+directly: a running exe locks the files the next build needs to overwrite, so a second
+instance on another port would break every later build. (Mirrors how the pine version
+gave each port its own process store.)
+#>
+$binPath = Join-Path $hostProjectPath 'bin/Release/net9.0-windows'
+$runPath = Join-Path $env:LOCALAPPDATA "Sanderling/alternate-ui-host-run-$Port"
+New-Item -ItemType Directory -Force $runPath | Out-Null
+Copy-Item (Join-Path $binPath '*') $runPath -Recurse -Force
+
+$hostExe = Join-Path $runPath 'alternate-ui-host.exe'
+if (-not (Test-Path $hostExe)) {
+    Write-Error "Built host not found at $hostExe"
+    return
+}
 
 if (Test-Path $logPath) { Remove-Item $logPath -Force }
 
-<#
-Below: -WindowStyle Hidden, NOT -NoNewWindow. -NoNewWindow leaves pine attached to the
-console this script runs in, and a console window stays open as long as any process is
-attached to it - so afterwards `exit` closes the shell but leaves a dead window behind
-until the server is stopped. Hidden gives pine its own invisible console, freeing the
-terminal the moment this script returns; output still goes to the log either way.
-#>
-$pineProcess = Start-Process -FilePath 'pine' `
-    -ArgumentList @(
-        'run-server',
-        "--process-store=$storePath",
-        <#
-        Bind to localhost, NOT the wildcard that upstream's run-alternate-ui.ps1 uses.
-        This UI can send mouse and keyboard input to the game client, so serving it on
-        every interface hands that capability to anything else on the network.
-        #>
-        "--admin-urls=http://localhost:$($Port + 20000)",
-        "--public-urls=http://localhost:$Port",
-        #  A store with no previous deployment refuses a plain --deploy ("No app config before").
-        '--delete-previous-process',
-        "--deploy=$sourcePath"
-    ) `
+#  -WindowStyle Hidden, NOT -NoNewWindow: a process attached to this console would keep a
+#  dead window open after `exit` until the server is stopped.
+$hostProcess = Start-Process -FilePath $hostExe `
+    -ArgumentList @("--urls=http://localhost:$Port") `
     -PassThru -WindowStyle Hidden `
     -RedirectStandardOutput $logPath `
     -RedirectStandardError "$logPath.err"
 
 $started = Get-Date
 $ready = $false
-$lastReport = 0
 
 while (((Get-Date) - $started).TotalSeconds -lt $TimeoutSeconds) {
-    if ($pineProcess.HasExited) {
+    if ($hostProcess.HasExited) {
         Write-Host ""
-        Write-Error "pine exited with code $($pineProcess.ExitCode) before the server came up. Log follows:"
+        Write-Error "Host exited with code $($hostProcess.ExitCode) before the server came up. Log follows:"
         if (Test-Path $logPath) { Get-Content $logPath -Tail 30 }
         if (Test-Path "$logPath.err") { Get-Content "$logPath.err" -Tail 30 }
         return
@@ -162,16 +160,10 @@ while (((Get-Date) - $started).TotalSeconds -lt $TimeoutSeconds) {
         if ($response.StatusCode -eq 200) { $ready = $true; break }
     }
     catch {
-        #  Not up yet - expected while the Elm backend compiles.
+        #  Not up yet.
     }
 
-    $elapsed = [int]((Get-Date) - $started).TotalSeconds
-    if (($elapsed - $lastReport) -ge 15) {
-        Write-Host "  still starting... ${elapsed}s elapsed"
-        $lastReport = $elapsed
-    }
-
-    Start-Sleep -Seconds 2
+    Start-Sleep -Milliseconds 500
 }
 
 Write-Host ""
@@ -179,8 +171,9 @@ if ($ready) {
     $elapsed = [int]((Get-Date) - $started).TotalSeconds
     Write-Host "READY after ${elapsed}s. The alternate UI is at $url"
     Write-Host "Inspector view: ${url}with-inspector"
+    Write-Host "Log: $logPath"
     Write-Host "Stop it again with: ./start-alternate-ui.ps1 -Stop -Port $Port"
 }
 else {
-    Write-Error "Timed out after ${TimeoutSeconds}s waiting for $url. pine is still running as pid $($pineProcess.Id); log at $logPath"
+    Write-Error "Timed out after ${TimeoutSeconds}s waiting for $url. Host is still running as pid $($hostProcess.Id); log at $logPath"
 }

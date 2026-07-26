@@ -1,13 +1,24 @@
 # Plan: replace the Pine backend with a .NET host
 
-Status: **phases 1 and 2 done, 2026-07-26** — the host lives in `implement/alternate-ui-host/`,
-started with `./start-alternate-ui-host.ps1` on port 8080. Both were verified against the live
-client the same day: whole-tree read **305-339 ms** end-to-end through the harness (was ~1.9-5 s),
-`l_menu` subtree read **9 ms** (was ~250 ms), a posted click toggled a window open and closed, and
-a hover produced a `TooltipPanel`. Phase 2 shipped with phase 1 because the message path is a
-verbatim copy with no external dependencies, and without it the unchanged frontend on 8080 would
-fail every click; the foreground branch was dropped, not ported (the host answers
-`FailedToBringWindowToFront` if asked for it). Remaining: phases 3 and 4.
+Status: **phases 1, 2, and 4 done, 2026-07-26; phase 3 deferred indefinitely.** The host lives in
+`implement/alternate-ui-host/` and is the default backend on port 80 via `./start-alternate-ui.ps1`
+(the interim `start-alternate-ui-host.ps1` was merged into it and deleted). Phases 1-2 were
+verified against the live client the same day: whole-tree read **305-339 ms** end-to-end through
+the harness (was ~1.9-5 s), `l_menu` subtree read **9 ms** (was ~250 ms), a posted click toggled a
+window open and closed, and a hover produced a `TooltipPanel`. Phase 2 shipped with phase 1 because
+the message path is a verbatim copy with no external dependencies, and without it the unchanged
+frontend would fail every click; the foreground branch was dropped, not ported (the host answers
+`FailedToBringWindowToFront` if asked for it).
+
+Phase 3 (envelope collapse) is deferred: it deletes ~460 lines and one double-parse, but it is the
+only phase that touches the frontend's wire code, and the current arrangement works. Do it if it
+ever blocks something. Because phase 3 has not run, phase 4 deviated from the plan in one way:
+`VolatileProcess.csx` and `Backend/Main.elm` stay in the tree (not just git history) — the intact
+pine app is the rollback path, and `Backend/Main.elm` embeds the `.csx` at compile time so deleting
+one without the other breaks that. `implement/read-memory-64-bit/prebuilt/` was deleted as planned.
+
+The one remaining latency lever is the frontend's 1-second poll tick (see the browser measurement
+below) — out of scope for this plan, noted for whenever page freshness matters more.
 
 Browser cost, measured in an active tab against the running page later the same day: transfer of
 the 1.38 MB response **234-249 ms**, then **one ~115 ms long task** per reading (JSON decode +
@@ -190,8 +201,10 @@ and restart", and the `#r` hash bullet in the version-sync list goes away. Delet
 
 ## Rollback
 
-Nothing is destructive until phase 4. `./start-alternate-ui.ps1` restores the pine instance on
-port 80 at any point; pine 0.4.21 stays installed at `C:\Users\Shadow\pine\v0.4.21`.
+Phase 4 rewrote `./start-alternate-ui.ps1` to run the .NET host, so rolling back to the pine
+backend now means: `git checkout 5f2081b~1 -- start-alternate-ui.ps1 implement/read-memory-64-bit/prebuilt`
+and run the restored script. The pine app source in `implement/alternate-ui/source/` is untouched
+and still deployable; pine 0.4.21 stays installed at `C:\Users\Shadow\pine\v0.4.21`.
 
 ## Constraints that apply throughout
 
