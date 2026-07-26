@@ -755,10 +755,18 @@ The few extra on a readable length cover characters typed since the reading was 
 charactersToClearFromTextField : EveOnline.ParseUserInterface.UITreeNodeWithDisplayRegion -> Int
 charactersToClearFromTextField fieldNode =
     if EveOnline.ParseUserInterface.isEditableTextArea fieldNode.uiNode then
+        {- The margin applies to the empty case too, and deliberately. `getParagraphsText`
+           answers `Nothing` both for a box that is empty and for one whose text could not be
+           read, and clearing nothing at all is only right for the first: a box that took a
+           character after the reading was taken would keep it, in front of whatever is typed
+           next. This is a margin, not a cure -- the count still comes from a sample, and only
+           reading the field back after the send would actually settle it.
+        -}
         fieldNode.uiNode
             |> EveOnline.ParseUserInterface.getParagraphsText
-            |> Maybe.map (String.length >> (+) 4)
+            |> Maybe.map String.length
             |> Maybe.withDefault 0
+            |> (+) 4
 
     else
         charactersToClearFromOneLineField fieldNode

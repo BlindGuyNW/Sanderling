@@ -398,8 +398,14 @@ public class EveOnline64
              * "EditPlainText", so the paragraphs above cannot tell them apart, and the alternate
              * UI read the corporation application's "Application Text" box -- a free text area
              * the player has to fill in -- as prose, exactly as it reads an item description.
-             * "readonly" is the client's own flag, and the only property on the node that tells
-             * the two apart. Six nodes in a whole reading carry it.
+             * "readonly" is the client's own flag for that difference.
+             *
+             * It does NOT on its own mark a text area, and reading it that way was a bug caught
+             * just before it shipped: the client puts the flag on its one-line fields too, all
+             * of them False -- "searchEdit", "QuickFilterEdit", the tax-rate fields. Six nodes
+             * in a whole reading carry it, and only one of the six was the text area. What picks
+             * that one out is the flag together with "paragraphs" below; see `isEditableTextArea`
+             * in ParseUserInterface.elm.
              *
              * The field's current content is "paragraphs" above, not the "currChars" the widget
              * also carries: typing "test probe" into the live application box left "currChars"
