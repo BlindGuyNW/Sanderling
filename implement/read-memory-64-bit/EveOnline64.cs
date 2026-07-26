@@ -456,6 +456,17 @@ public class EveOnline64
             "_checked",
 
             /*
+             * 2026-07-26 The same question for the rows of a util menu -- the menu a panel's small
+             * menu button opens into "l_utilmenu". Those rows are not Checkboxes: the market
+             * filter menu's "Automatically refresh market data" is a "UtilMenuCheckBox", of the
+             * client's own "UtilMenuEntryBase" family, and it carries neither "_checked" nor a
+             * "self_ok" sprite. It states its state in "isChecked" and nowhere else, so without
+             * this key the row read as a plain button and the page could not say whether the
+             * setting was on. Measured on the market window's filter menu.
+             * */
+            "isChecked",
+
+            /*
              * 2026-07-25 Which way a sorted column is sorted, on ColumnHeader: 1 ascending, -1
              * descending. Measured rather than assumed, by clicking the station hangar list's Name
              * header and re-reading: "_direction" went 1 -> -1 on that header alone while the six

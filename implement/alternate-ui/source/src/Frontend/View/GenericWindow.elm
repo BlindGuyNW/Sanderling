@@ -589,7 +589,16 @@ walk typeHierarchy insideCandidate node =
                                                 { items = [ Prose prose ], hasCandidate = False }
 
                                             Nothing ->
-                                                walkContainer typeHierarchy insideCandidate node
+                                                --  Before the container walk because the row is
+                                                --  what carries the label; see `utilMenuGridItems`.
+                                                case utilMenuGridItems typeHierarchy insideCandidate node of
+                                                    Just items ->
+                                                        { items = items
+                                                        , hasCandidate = items |> List.any itemIsCandidate
+                                                        }
+
+                                                    Nothing ->
+                                                        walkContainer typeHierarchy insideCandidate node
 
 
 {-| The text of a multi-line text widget -- an item description, a note, a mail body.
@@ -1293,6 +1302,8 @@ familyRootsOfControls =
     , "PanelEntryBase" -- the EVE menu's rows: PanelEntryGroup (expandable groups) and PanelEntryCmd (commands like Settings, Log off). Observed 2026-07-23.
     , "ScrollContEntry" -- scroll-container entries of the newer UI framework: the skill window's SkillGroupEntry and SkillGroupSkillEntry rows, which SE_BaseClassCore does not cover. Without it the skill group grid merges into prose three groups per line. Observed 2026-07-23.
     , "SkillPlanEntry" -- the skill window's plan cards: AirSkillPlanEntry, and the certified/personal plan cards of the same family. Clicking one opens the plan's detail panel. Without it the whole plans browser collapses into one control labeled with a training time. Observed 2026-07-23.
+    , "UtilMenuIconEntry" -- the rows of a util menu, and UtilMenuButton below it: Copy all skills to clipboard, Reset. Observed 2026-07-26.
+    , "UtilMenuCheckBox" -- a util menu's toggle rows, e.g. the market filter menu's Automatically refresh market data. Not of the Checkbox family, and not of UtilMenuIconEntry either -- both derive from UtilMenuEntryBase, which is deliberately *not* the root named here: UtilMenuLayoutGrid derives from it too, and claiming the grid as one control turns a menu of filters into a single line reading "-, -, Show orders in". Observed 2026-07-26.
     ]
 
 
@@ -1457,6 +1468,226 @@ textFieldItems typeHierarchy node =
             (Common.textFieldControl label (textOfDescendantNamed "textLabel") node
                 :: innerControls
             )
+
+
+{-| The rows of a util menu the client lays out as a grid, with each row's leading label carried
+onto the controls in it that the client leaves unnamed. `Nothing` for anything that is not such a
+grid.
+
+The market window's filter menu is five rows of `Price [min] - [max]`, and the client labels only
+the first cell of each. The two fields carry no `_hint`, an empty `hintText` and an empty
+`__caption` -- measured on the live objects, not assumed -- so the label preference in
+`textFieldItems` falls all the way through to the internal name, and the row read
+`minEdit_market_filter_price` and `maxEdit_market_filter_price`. The words the player sees are in
+the cell to the left, which is layout the client maintains for its own sake, so the row supplies
+them.
+
+Only entries the client named nothing else are touched: anything carrying a label of its own keeps
+it, which is what makes the rule safe on a row of self-labelled controls. The `Show orders in` row
+is three checkboxes reading `High Sec`, `Low Sec` and `Null Sec`, and prefixing those from the
+row's first cell would have called two of them `High Sec`.
+
+Rows are cells at the same height rather than the client's `Row0_Col0` cell names, so a grid that
+names its cells differently still reads.
+
+Observed 2026-07-26 with the menu open on a live client.
+
+-}
+utilMenuGridItems : Dict.Dict String (List String) -> Bool -> UITreeNodeWithDisplayRegion -> Maybe (List ContentItem)
+utilMenuGridItems typeHierarchy insideCandidate node =
+    let
+        inheritanceChain =
+            Dict.get node.uiNode.pythonObjectTypeName typeHierarchy
+                |> Maybe.withDefault [ node.uiNode.pythonObjectTypeName ]
+    in
+    if not (List.member "UtilMenuLayoutGrid" inheritanceChain) then
+        Nothing
+
+    else
+        node
+            |> EveOnline.ParseUserInterface.listChildrenWithDisplayRegion
+            |> Common.nodesInReadingOrder
+            |> gridRows
+            |> List.concatMap (utilMenuRowItems typeHierarchy insideCandidate)
+            |> Just
+
+
+{-| Cells of a grid grouped into rows, a row being the cells drawn at the same height. The cells
+arrive in reading order, so the cells of one row are consecutive.
+-}
+gridRows : List UITreeNodeWithDisplayRegion -> List (List UITreeNodeWithDisplayRegion)
+gridRows cells =
+    cells
+        |> List.foldr
+            (\cell rows ->
+                case rows of
+                    (rowHead :: rowTail) :: rest ->
+                        if rowHead.totalDisplayRegion.y == cell.totalDisplayRegion.y then
+                            (cell :: rowHead :: rowTail) :: rest
+
+                        else
+                            [ cell ] :: rows
+
+                    _ ->
+                        [ [ cell ] ]
+            )
+            []
+
+
+{-| One row: the first cell as it reads, and the rest of the cells labelled from it.
+-}
+utilMenuRowItems : Dict.Dict String (List String) -> Bool -> List UITreeNodeWithDisplayRegion -> List ContentItem
+utilMenuRowItems typeHierarchy insideCandidate row =
+    case row of
+        [] ->
+            []
+
+        firstCell :: restCells ->
+            let
+                firstItems =
+                    (walk typeHierarchy insideCandidate firstCell).items
+
+                rowLabel =
+                    firstItems
+                        |> List.filterMap textOfContentItem
+                        |> List.filter (String.isEmpty >> not)
+                        |> List.head
+            in
+            firstItems
+                ++ (restCells |> List.concatMap (labelledCellItems typeHierarchy insideCandidate rowLabel))
+
+
+{-| One cell of a row, with the row's label given to whatever in it has none.
+
+The qualifier comes from the cell rather than the entry, so that the field's own arrows are named
+after the field they step -- `Price minimum, more` -- instead of both ends of the row growing a
+pair of controls that read alike.
+
+-}
+labelledCellItems : Dict.Dict String (List String) -> Bool -> Maybe String -> UITreeNodeWithDisplayRegion -> List ContentItem
+labelledCellItems typeHierarchy insideCandidate maybeRowLabel cell =
+    let
+        items =
+            (walk typeHierarchy insideCandidate cell).items
+    in
+    case maybeRowLabel of
+        Nothing ->
+            items
+
+        Just rowLabel ->
+            let
+                qualifier =
+                    items
+                        |> List.filterMap (unnamedEntryName >> Maybe.andThen rangeEndWord)
+                        |> List.head
+
+                cellLabel =
+                    case qualifier of
+                        Just word ->
+                            rowLabel ++ " " ++ word
+
+                        Nothing ->
+                            rowLabel
+            in
+            items |> List.map (relabelUnnamed cellLabel)
+
+
+textOfContentItem : ContentItem -> Maybe String
+textOfContentItem item =
+    case item of
+        Group text ->
+            Just text
+
+        Prose prose ->
+            Just prose.text
+
+        Control entry ->
+            Just entry.label
+
+        Table _ ->
+            Nothing
+
+
+{-| The internal name an entry fell back to for want of any label the client supplies, or `Nothing`
+when the client did name it. The test is that the label *is* the node's `_name`, which is exactly
+what the last resort in `Common.labelForControl` and in `textFieldItems` produces.
+-}
+unnamedEntryName : ContentItem -> Maybe String
+unnamedEntryName item =
+    case item of
+        Control entry ->
+            case entry.target of
+                Just target ->
+                    if
+                        Just entry.label
+                            == EveOnline.ParseUserInterface.getNameFromDictEntries target.node.uiNode
+                    then
+                        Just entry.label
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
+relabelUnnamed : String -> ContentItem -> ContentItem
+relabelUnnamed cellLabel item =
+    case ( item, unnamedEntryName item ) of
+        ( Control entry, Just name ) ->
+            Control { entry | label = cellLabel ++ partOfCellWord name }
+
+        _ ->
+            item
+
+
+{-| Which end of a min/max pair a field is, from the client's own name for it. The debt
+`CONVENTIONS.md` rule 4 describes: `minEdit_`/`maxEdit_` prefixes observed on the market filter
+menu's ten fields, 2026-07-26. Without the distinction both ends of a row read alike, and a range
+whose two boxes are called the same thing cannot be set.
+-}
+rangeEndWord : String -> Maybe String
+rangeEndWord name =
+    if String.startsWith "minEdit" name then
+        Just "minimum"
+
+    else if String.startsWith "maxEdit" name then
+        Just "maximum"
+
+    else
+        Nothing
+
+
+{-| What an unnamed control adds to the label of the cell it sits in: nothing for the cell's field
+itself, and the step direction for the arrows the client grows beside a numeric field.
+-}
+partOfCellWord : String -> String
+partOfCellWord name =
+    case ( rangeEndWord name, name ) of
+        ( Just _, _ ) ->
+            ""
+
+        ( Nothing, "upButton" ) ->
+            ", more"
+
+        ( Nothing, "downButton" ) ->
+            ", less"
+
+        ( Nothing, other ) ->
+            ", " ++ other
+
+
+itemIsCandidate : ContentItem -> Bool
+itemIsCandidate item =
+    case item of
+        Prose _ ->
+            False
+
+        _ ->
+            True
 
 
 {-| The module slots of the fitting window, read as the ship's slot layout, or `Nothing` for any
@@ -1683,6 +1914,16 @@ checkboxState typeHierarchy node =
     in
     if List.member "Checkbox" inheritanceChain then
         Just (Maybe.withDefault drawsCheckMarkSprite checkedFlag)
+
+    else if List.member "UtilMenuEntryBase" inheritanceChain then
+        --  A util menu's rows are their own family and share none of the marks above: no
+        --  `_checked`, no `self_ok` sprite, and the sprite they do carry is on the plain rows
+        --  too. `isChecked` is the client's own answer and appears only on the toggling ones,
+        --  so a `UtilMenuButton` -- Reset -- gets `Nothing` and stays a plain control.
+        --  Observed 2026-07-26 on the market window's filter menu.
+        node.uiNode.dictEntriesOfInterest
+            |> Dict.get "isChecked"
+            |> Maybe.andThen (Json.Decode.decodeValue Common.decodeBoolOrInt >> Result.toMaybe)
 
     else
         Nothing

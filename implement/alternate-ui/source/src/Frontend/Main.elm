@@ -1812,6 +1812,7 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                                , displayParsedContextMenus maybeInputRoute memoryReading.parsedUserInterface.contextMenus
                                , verticalSpacerFromHeightInEm 0.5
                                ]
+                            ++ displayUtilMenus maybeInputRoute memoryReading.typeHierarchy memoryReading.parsedUserInterface
                             ++ displayInventoryMoveActions maybeInputRoute memoryReading.parsedUserInterface
                             ++ displaySkillQueueReorderActions maybeInputRoute memoryReading.parsedUserInterface
                             ++ displayOtherWindows maybeInputRoute memoryReading.typeHierarchy memoryReading.parsedUserInterface
@@ -1999,6 +2000,42 @@ displayMessageBox context messageBox =
     , Frontend.View.Common.actionList context buttonEntries
     ]
         |> Html.div []
+
+
+{-| The menu a panel's small ⋯/menu button has open, which the client builds into `l_utilmenu` --
+directly after the context menus, which is where that layer sits in the client's own stack.
+
+Read through the generic content walk rather than as a list of menu entries: a util menu is a small
+panel of checkboxes, fields and buttons, not a menu. See `parseUtilMenusFromUITreeRoot`.
+
+The section is titled by hand because the client draws no caption over the menu; `Options` is what
+the ⋯ button opens everywhere it appears, and nothing in the reading says which panel opened this
+one. Treat it as the debt `CONVENTIONS.md` rule 4 describes.
+
+-}
+displayUtilMenus : Maybe InputRouteConfig -> Dict.Dict String (List String) -> EveOnline.ParseUserInterface.ParsedUserInterface -> List (Html.Html Event)
+displayUtilMenus maybeInputRouteConfig typeHierarchy parsedUserInterface =
+    let
+        context =
+            viewContextFromInputRouteConfig maybeInputRouteConfig 3
+
+        menus =
+            parsedUserInterface.utilMenus |> List.filter Frontend.View.Common.isVisible
+    in
+    if List.isEmpty menus then
+        []
+
+    else
+        [ Frontend.View.Common.section
+            context
+            "Options menu"
+            (\contextForContent ->
+                menus
+                    |> List.concatMap
+                        (Frontend.View.GenericWindow.panelBodyHtml typeHierarchy contextForContent)
+            )
+        , verticalSpacerFromHeightInEm 0.5
+        ]
 
 
 {-| Every window the game client is showing that does not have a view of its own here, read

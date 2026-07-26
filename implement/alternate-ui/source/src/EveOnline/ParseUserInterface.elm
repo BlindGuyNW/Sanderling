@@ -28,6 +28,7 @@ type alias ParsedUserInterface =
     { uiTree : UITreeNodeWithDisplayRegion
     , layers : List UILayer
     , contextMenus : List ContextMenu
+    , utilMenus : List UITreeNodeWithDisplayRegion
     , shipUI : Maybe ShipUI
     , targets : List Target
     , infoPanelContainer : Maybe InfoPanelContainer
@@ -820,6 +821,7 @@ parseUserInterfaceFromUITree uiTree =
     { uiTree = uiTree
     , layers = parseLayersFromUITreeRoot uiTree
     , contextMenus = parseContextMenusFromUITreeRoot uiTree
+    , utilMenus = parseUtilMenusFromUITreeRoot uiTree
     , shipUI = parseShipUIFromUITreeRoot uiTree
     , targets = parseTargetsFromUITreeRoot uiTree
     , infoPanelContainer = parseInfoPanelContainerFromUIRoot uiTree
@@ -1234,24 +1236,18 @@ getFixedNumberFromDictEntries propertyName uiNode =
             Nothing
 
 
-{-| Open menus, from both layers the client opens menus into. Right-click menus and combo
-options land in `l_menu`; a util menu -- the small ⋯/menu button beside the training queue's
-caption, and its siblings on other panels -- opens its options into `l_utilmenu` as an
-`ExpandedUtilMenu` of `UtilMenuIconEntry` rows, the same shape as a context menu in a layer of
-its own. Without reading that layer the open util menu appeared nowhere at all: it has no
-window `content` shape, so the generic shell drops it too. The `buttonCopy` container the
-client puts beside it in the layer does not pass the type filter. Observed 2026-07-23 on the
-skill queue's util menu (Copy all skills to clipboard, Clear skill queue, ...).
+{-| The menus the client opens into `l_menu`: right-click menus, and the options of an open combo
+box.
+
+Util menus are not among them. They live in `l_utilmenu` and are read by `parseUtilMenusFromUITreeRoot`
+instead -- see there for why a list of menu-entry rows is the wrong shape for them.
+
 -}
 parseContextMenusFromUITreeRoot : UITreeNodeWithDisplayRegion -> List ContextMenu
 parseContextMenusFromUITreeRoot uiTreeRoot =
-    [ "l_menu", "l_utilmenu" ]
-        |> List.concatMap
-            (\layerName ->
-                uiTreeRoot
-                    |> listChildrenWithDisplayRegion
-                    |> List.filter (.uiNode >> getNameFromDictEntries >> Maybe.map String.toLower >> (==) (Just layerName))
-            )
+    uiTreeRoot
+        |> listChildrenWithDisplayRegion
+        |> List.filter (.uiNode >> getNameFromDictEntries >> Maybe.map String.toLower >> (==) (Just "l_menu"))
         |> List.concatMap
             (\layerMenu ->
                 layerMenu
@@ -1271,6 +1267,40 @@ parseContextMenusFromUITreeRoot uiTreeRoot =
                         )
             )
         |> List.map parseContextMenu
+
+
+{-| The menu a panel's small ⋯/menu button opens, which the client builds into a layer of its own,
+`l_utilmenu`. Returned as the bare menu node, for the generic content walk to read.
+
+A util menu is *not* a list of menu-entry rows, which is what this used to be parsed as, and the
+market window's filter menu is where that broke: it is a `UtilMenuLayoutGrid` of labelled
+`Checkbox`es and `SingleLineEditFloat` min/max fields, plus a `UtilMenuCheckBox` and a
+`UtilMenuButton` below it. None of those are menu entries, so the entry list came out empty and the
+open menu -- five filter rows, a security-space picker and a Reset button -- reached the page as a
+heading with nothing under it. Observed 2026-07-26 with the menu open on a live client.
+
+So the shape is not a menu at all; it is a small panel, and the generic content walk already reads
+checkboxes, text fields and buttons wherever it finds them. The skill queue's util menu (Copy all
+skills to clipboard, Clear skill queue), a flat list of `UtilMenuIconEntry` rows, is the degenerate
+case of the same thing and reads through it too.
+
+Matching the type name by substring rather than by equality: the one class seen is
+`ExpandedUtilMenu`, and the point of the test is only to tell the menu from the `buttonCopy`
+`Container` the client parks in the same layer -- the button the menu was opened from.
+
+-}
+parseUtilMenusFromUITreeRoot : UITreeNodeWithDisplayRegion -> List UITreeNodeWithDisplayRegion
+parseUtilMenusFromUITreeRoot uiTreeRoot =
+    uiTreeRoot
+        |> listChildrenWithDisplayRegion
+        |> List.filter (.uiNode >> getNameFromDictEntries >> Maybe.map String.toLower >> (==) (Just "l_utilmenu"))
+        |> List.concatMap listChildrenWithDisplayRegion
+        |> List.filter
+            (.uiNode
+                >> .pythonObjectTypeName
+                >> String.toLower
+                >> String.contains "utilmenu"
+            )
 
 
 parseInfoPanelContainerFromUIRoot : UITreeNodeWithDisplayRegion -> Maybe InfoPanelContainer
@@ -1622,10 +1652,6 @@ parseContextMenu contextMenuUINode =
                                --  combo. No marker distinguishes the current selection -- the
                                --  combo control itself reads its current value.
                                (descendant.uiNode.pythonObjectTypeName == "ComboEntry")
-                            || --  The rows of an open util menu in `l_utilmenu`; the "icon" in
-                               --  the middle of the name keeps the "menuentry" substring from
-                               --  matching. Observed 2026-07-23 on the skill queue's util menu.
-                               (descendant.uiNode.pythonObjectTypeName == "UtilMenuIconEntry")
                     )
 
         entries =
