@@ -42,6 +42,7 @@ import Frontend.InspectParsedUserInterface exposing (InputOnUINode(..), InputRou
 import Html
 import Html.Attributes as HA
 import Html.Events as HE
+import Html.Keyed
 import Json.Decode
 import Json.Encode
 import Regex
@@ -630,14 +631,53 @@ textFieldElement maybeInputRoute label currentText node =
                                 ( inputRoute node (TypeTextIntoField typedText), True )
                             )
             in
-            Html.input
-                [ HA.type_ "text"
-                , HA.attribute "aria-label" label
-                , HA.attribute "value" (currentText |> Maybe.withDefault "")
-                , HE.preventDefaultOn "keydown"
-                    (Json.Decode.oneOf [ tooltipGestureDecoder inputRoute node, enterKeyDecoder ])
-                ]
-                []
+            keyedOnGameContent node
+                currentText
+                (Html.input
+                    [ HA.type_ "text"
+                    , HA.attribute "aria-label" label
+                    , HA.attribute "value" (currentText |> Maybe.withDefault "")
+                    , HE.preventDefaultOn "keydown"
+                        (Json.Decode.oneOf [ tooltipGestureDecoder inputRoute node, enterKeyDecoder ])
+                    ]
+                    []
+                )
+
+
+{-| Rebuild an edit box whenever the game client's own content changes, and leave it alone for as
+long as that content stands.
+
+The content of both kinds of box rides in as the `value` *attribute* rather than the property, so
+that it fills the box on first render and then stops applying the moment the player types. That
+much is wanted: mirroring the property would re-set the box on every reading -- once a second --
+and wipe whatever was being written. What it also meant was that the box never noticed the game's
+field changing underneath it. Press the client's own Clear and the field empties, the clear-X
+disappears, and the page went on showing the text that is no longer there.
+
+Keying on the content settles both. While the client's field holds what it held, the key stands,
+the element survives, and half-written text with it. When the field changes -- cleared, or a send
+landing -- the key changes, the element is rebuilt, and the attribute applies afresh to a box the
+browser considers new. So the box shows what the client actually holds, which is also what makes
+a send that went in wrong visible instead of silent.
+
+The address is in the key so that two fields never trade DOM nodes, and the empty and absent
+cases are distinguished so that clearing a field is itself a change of key.
+
+-}
+keyedOnGameContent : UITreeNodeWithDisplayRegion -> Maybe String -> Html.Html event -> Html.Html event
+keyedOnGameContent node currentText element =
+    let
+        contentKey =
+            case currentText of
+                Nothing ->
+                    "empty"
+
+                Just content ->
+                    "holds:" ++ content
+    in
+    Html.Keyed.node "span"
+        []
+        [ ( node.uiNode.pythonObjectAddress ++ "|" ++ contentKey, element ) ]
 
 
 {-| A free-text area of the game client, as the multi-line edit box a screen reader expects:
@@ -708,20 +748,27 @@ textAreaElement maybeInputRoute label currentText node =
                         Json.Decode.string
                         |> Json.Decode.map sendEvent
             in
-            Html.span []
-                [ Html.textarea
-                    [ HA.attribute "aria-label"
-                        (label ++ " (text area, press Ctrl+Enter to send it to the game)")
-                    , HA.rows 6
-                    , HA.property "defaultValue" (Json.Encode.string content)
-                    , HE.preventDefaultOn "keydown"
-                        (Json.Decode.oneOf [ tooltipGestureDecoder inputRoute node, controlEnterDecoder ])
+            {- The button and the box stay siblings inside the keyed element, because the button
+               reaches the box through `previousElementSibling`. Wrapping the box alone would put
+               a container between them and break the send.
+            -}
+            keyedOnGameContent node
+                currentText
+                (Html.span []
+                    [ Html.textarea
+                        [ HA.attribute "aria-label"
+                            (label ++ " (text area, press Ctrl+Enter to send it to the game)")
+                        , HA.rows 6
+                        , HA.property "defaultValue" (Json.Encode.string content)
+                        , HE.preventDefaultOn "keydown"
+                            (Json.Decode.oneOf [ tooltipGestureDecoder inputRoute node, controlEnterDecoder ])
+                        ]
+                        []
+                    , Html.button
+                        [ HE.on "click" sendButtonDecoder ]
+                        [ Html.text ("Send to game: " ++ label) ]
                     ]
-                    []
-                , Html.button
-                    [ HE.on "click" sendButtonDecoder ]
-                    [ Html.text ("Send to game: " ++ label) ]
-                ]
+                )
 
 
 {-| The label to present for a control, preferring what the game client itself says over anything
