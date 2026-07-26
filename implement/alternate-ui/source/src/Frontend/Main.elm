@@ -1767,6 +1767,11 @@ page, and yanking the reading position up here would cost more than the tooltip 
 element is present even while empty, because a live region only announces changes to a region
 that already existed. The last answer stays until the next inspection, so it can also be
 navigated to and read again.
+
+A pending inspection says nothing: the gesture answers in about a second, so a "reading..." notice
+would be spoken over by the answer more often than it would inform. Going empty while pending also
+means a repeated inspection of the same node still announces, which an unchanged live region
+would not.
 -}
 tooltipInspectionHtml : TooltipInspectionState -> Html.Html Event
 tooltipInspectionHtml inspection =
@@ -1779,7 +1784,7 @@ tooltipInspectionHtml inspection =
                 []
 
             TooltipInspectionPending _ ->
-                [ Html.text "Reading tooltip..." ]
+                []
 
             TooltipInspectionCompleted { texts } ->
                 case texts of
