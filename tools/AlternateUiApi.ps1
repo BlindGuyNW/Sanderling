@@ -38,7 +38,7 @@ function Set-AlternateUiEndpoint {
 function Invoke-VolatileRequest {
     <#
     .SYNOPSIS
-    Send one request to the backend's volatile process and return the parsed response.
+    Send one request to the backend and return the parsed response.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$Tag,
@@ -69,7 +69,7 @@ function Invoke-VolatileRequest {
     $complete = $outer.RunInVolatileProcessCompleteResponse[0]
 
     if ($complete.exceptionToString.Just) {
-        throw "volatile process raised: $($complete.exceptionToString.Just)"
+        throw "backend raised: $($complete.exceptionToString.Just)"
     }
 
     if ($null -eq $complete.returnValueToString.Just) { return $null }
@@ -310,7 +310,7 @@ function Send-MouseClick {
     Click at a location in client coordinates, without bringing the window to the foreground.
 
     .DESCRIPTION
-    Note the volatile process enforces its own wait between the move and the button down;
+    Note the backend enforces its own wait between the move and the button down;
     the delay elements here only pace the sequence.
     #>
     param(

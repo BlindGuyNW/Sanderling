@@ -1,5 +1,13 @@
 # Alternate UI for EVE Online
 
+> **Note for this fork:** the backend described in the Setup section below (PineVM running the
+> Elm web service) was replaced in 2026-07 by the .NET host in `implement/alternate-ui-host/`.
+> Run the UI with `./start-alternate-ui.ps1` from the repository root; `pine` is only needed to
+> compile the frontend. See `PLAN-dotnet-host.md` in this directory. The upstream instructions
+> below are kept for reference and still apply to upstream Sanderling. The note in "Load from a
+> live EVE Online client process" about the tool switching focus to the game window also no
+> longer applies here — this fork posts input without taking the foreground.
+
 ![Alternate UI for EVE Online, this part shows the Overview.](./../../guide/image/2020-01-30.eve-online-overview-alternate-ui-and-game-client.png)
 
 The alternate UI is a web-based user interface for the EVE Online client. Because of the HTML based rendering, this user interface is better accessible with screen-readers.
