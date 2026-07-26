@@ -598,7 +598,16 @@ walk typeHierarchy insideCandidate node =
                                                         }
 
                                                     Nothing ->
-                                                        walkContainer typeHierarchy insideCandidate node
+                                                        --  Also before the container walk, which
+                                                        --  collapses the numbers into one entry
+                                                        --  and drops what names them. See
+                                                        --  `iconReadoutItems`.
+                                                        case iconReadoutItems typeHierarchy node of
+                                                            Just items ->
+                                                                { items = items, hasCandidate = True }
+
+                                                            Nothing ->
+                                                                walkContainer typeHierarchy insideCandidate node
 
 
 {-| The text of a multi-line text widget -- an item description, a note, a mail body.
@@ -1688,6 +1697,89 @@ itemIsCandidate item =
 
         _ ->
             True
+
+
+{-| A readout the client draws as a row of icons with a number beside each, read as one line per
+icon with the icon's tooltip naming what its number counts. `Nothing` for anything else.
+
+`CONVENTIONS.md` rule 6 says a tooltip is not content -- it describes the control the player is
+pointing at, and listing tooltips among a window's contents turns the wallet into three paragraphs
+about ISK with the balance buried under them. That holds wherever the tooltip is commentary on
+something the reading already carries.
+
+Here it carries nothing for the tooltip to comment on. The market item's fitting requirements are
+`powerIcon` and `cpuIcon` -- textures -- with a bare `2` and `4` beside them, so the reading held
+two integers and no word saying what either counted, and the container walk collapsed them into one
+entry reading `2, 4`. The tooltip is not describing the content, it *is* the content, drawn as an
+image: the same case the career path's lock icon made, which the `( [], Nothing )` branch of
+`walkContainerItems` already concedes. That branch is written for a container with no text at all,
+so it misses this shape -- an image *plus* a number that means nothing without it.
+
+Rule 6's own instruction is that tooltips label controls, and labelling is exactly what these do.
+What had gone wrong is that the label and the number were separated, so they are joined here rather
+than the hints being emitted as entries beside the numbers, which is what the rule forbids.
+
+Kept narrow deliberately. Every child must be an icon group -- one tooltip-carrying `Sprite`, at
+most one piece of text, and nothing the player can act on -- and there must be more than one of
+them, so this claims a readout and not an ordinary label that happens to sit beside an icon.
+
+Observed on the market window's item detail, 2026-07-26: a 75mm Prototype Gauss Gun showing
+powergrid `2` and CPU `4` over `You have all of the required skills to use this item`.
+
+-}
+iconReadoutItems : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> Maybe (List ContentItem)
+iconReadoutItems typeHierarchy node =
+    let
+        children =
+            node
+                |> EveOnline.ParseUserInterface.listChildrenWithDisplayRegion
+                |> List.filter Common.isVisible
+                |> Common.nodesInReadingOrder
+
+        lines =
+            children |> List.filterMap (iconGroupLine typeHierarchy)
+    in
+    if List.length children < 2 || List.length lines /= List.length children then
+        Nothing
+
+    else
+        Just (lines |> List.map (Common.prose >> Control))
+
+
+{-| What one icon of such a readout says: its tooltip, and the number the client drew beside it
+when there is one. `Nothing` when this child is not an icon group, which disqualifies the whole
+container -- a readout is all icons or it is not one.
+-}
+iconGroupLine : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> Maybe String
+iconGroupLine typeHierarchy child =
+    let
+        subtree =
+            child :: (child |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion)
+
+        hintsOfSprites =
+            subtree
+                |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "Sprite")
+                |> List.filterMap hintText
+
+        texts =
+            subtree |> List.filterMap ownText
+
+        holdsSomethingToActOn =
+            subtree |> List.any (isControlCandidate typeHierarchy)
+    in
+    if holdsSomethingToActOn then
+        Nothing
+
+    else
+        case ( hintsOfSprites, texts ) of
+            ( [ hint ], [] ) ->
+                Just hint
+
+            ( [ hint ], [ text ] ) ->
+                Just (hint ++ ": " ++ text)
+
+            _ ->
+                Nothing
 
 
 {-| The module slots of the fitting window, read as the ship's slot layout, or `Nothing` for any
