@@ -377,6 +377,22 @@ public class EveOnline64
             //  Found in "_sr" Bunch
             "htmlstr",
 
+            /*
+             * 2026-07-26 The text of the multi-line text widgets -- "EditPlainText" and the
+             * "SE_EditTextlineCore" lines under it, which carry an item description, a note, a
+             * mail body. None of those nodes carries "_setText" or "_text": the client hands the
+             * text to the renderer and the widget keeps no copy, so the reading had the geometry
+             * of every line (an item description came through as five nodes named "entry_0" to
+             * "entry_4", correct heights and widths, no characters) and none of the text.
+             *
+             * "_sr.paragraphs" is a list of "Tr2GlyphString", one per logical paragraph, and each
+             * one does carry the text -- see `ReadingFromPythonType_Tr2GlyphString`. Paragraphs
+             * rather than the per-line "_sr.node.glyphString" on purpose: the line objects hold
+             * the text already broken at the wrap points the client happened to draw, which reads
+             * aloud as sentences chopped mid-clause.
+             * */
+            "paragraphs",
+
             // 2023-01-03 Sample with PhotonUI: process-sample-ebdfff96e7.zip
             "_texturePath",
             "_opacity",
@@ -463,7 +479,114 @@ public class EveOnline64
          * */
         .Add("set", new Func<ulong, LocalMemoryReadingTools, object>(ReadingFromPythonType_set))
         .Add("frozenset", new Func<ulong, LocalMemoryReadingTools, object>(ReadingFromPythonType_set))
-        .Add("InteractionState", new Func<ulong, LocalMemoryReadingTools, object>(ReadingFromPythonType_InteractionState));
+        .Add("InteractionState", new Func<ulong, LocalMemoryReadingTools, object>(ReadingFromPythonType_InteractionState))
+        .Add("list", new Func<ulong, LocalMemoryReadingTools, object>(ReadingFromPythonType_list))
+        /*
+         * 2026-07-26 The renderer's laid-out text. Despite the Trinity name it is an ordinary
+         * python object with an instance dict, and its "text" entry is the source string the
+         * client drew -- which is the only copy of a description, note or mail body that survives
+         * anywhere the reading can reach.
+         * */
+        .Add("Tr2GlyphString", new Func<ulong, LocalMemoryReadingTools, object>(ReadingFromPythonType_Tr2GlyphString));
+
+    /*
+     * Where instances of this object's type keep their __dict__, read from the type rather than
+     * assumed. The readers above that hardcode 0x10 happen to be right for the widget classes they
+     * were written for; "Tr2GlyphString" keeps its dict elsewhere, so this asks the type.
+     * PyTypeObject.tp_dictoffset, 64-bit CPython 2.7:
+     * https://github.com/python/cpython/blob/2.7/Include/object.h
+     * */
+    static ulong? GetInstanceDictionaryAddress(ulong objectAddress, IMemoryReader memoryReader)
+    {
+        const int tp_dictoffset_offset = 0x120;
+
+        var objectMemory = memoryReader.ReadBytes(objectAddress, 0x10);
+
+        if (objectMemory?.Length is not 0x10)
+            return null;
+
+        var typeObjectAddress = BitConverter.ToUInt64(objectMemory.Value.Span[0x08..]);
+
+        var typeObjectMemory = memoryReader.ReadBytes(typeObjectAddress + tp_dictoffset_offset, 8);
+
+        if (typeObjectMemory?.Length is not 8)
+            return null;
+
+        var dictOffset = BitConverter.ToUInt64(typeObjectMemory.Value.Span);
+
+        if (dictOffset is 0 || 0x1000 < dictOffset)
+            return null;
+
+        var dictionaryReferenceMemory = memoryReader.ReadBytes(objectAddress + dictOffset, 8);
+
+        if (dictionaryReferenceMemory?.Length is not 8)
+            return null;
+
+        var dictionaryAddress = BitConverter.ToUInt64(dictionaryReferenceMemory.Value.Span);
+
+        if (dictionaryAddress is 0)
+            return null;
+
+        return dictionaryAddress;
+    }
+
+    static object ReadingFromPythonType_Tr2GlyphString(ulong address, LocalMemoryReadingTools memoryReadingTools)
+    {
+        /*
+         * The consumer discards exactly this sentence (`textOfFailedReading` in
+         * ParseUserInterface.elm) rather than showing the player text the client never displayed,
+         * so the failure paths here answer in it instead of inventing their own wording.
+         * */
+        const string textOfFailedReading = "Failed to read string bytes.";
+
+        if (GetInstanceDictionaryAddress(address, memoryReadingTools.memoryReader) is not { } dictionaryAddress)
+            return textOfFailedReading;
+
+        var dictionaryEntries = memoryReadingTools.getDictionaryEntriesWithStringKeys(dictionaryAddress);
+
+        if (dictionaryEntries is null)
+            return textOfFailedReading;
+
+        if (!dictionaryEntries.TryGetValue("text", out var textAddress))
+            return textOfFailedReading;
+
+        return memoryReadingTools.GetDictEntryValueRepresentation(textAddress);
+    }
+
+    /*
+     * 2026-07-26 Added so that "_sr.paragraphs" -- a list of "Tr2GlyphString" -- can be followed.
+     * Elements go back through `GetDictEntryValueRepresentation`, so a list of strings reads as
+     * strings and anything without a reader of its own keeps the generic address representation.
+     * The item count is capped because this runs on every reading and a list is not always small.
+     * */
+    static object ReadingFromPythonType_list(ulong address, LocalMemoryReadingTools memoryReadingTools)
+    {
+        var listObjectMemory = memoryReadingTools.memoryReader.ReadBytes(address, 0x20);
+
+        if (!(listObjectMemory?.Length == 0x20))
+            return "Failed to read list object memory.";
+
+        var ob_size = (long)BitConverter.ToUInt64(listObjectMemory.Value.Span[0x10..]);
+
+        if (ob_size < 0 || 200 < ob_size)
+            return $"list of {ob_size} items (not expanded)";
+
+        var ob_item = BitConverter.ToUInt64(listObjectMemory.Value.Span[0x18..]);
+
+        var itemsMemory = memoryReadingTools.memoryReader.ReadBytes(ob_item, (int)ob_size * 8);
+
+        if (!(itemsMemory?.Length == (int)ob_size * 8))
+            return "Failed to read list items.";
+
+        var items = TransformMemoryContent.AsULongMemory(itemsMemory.Value);
+
+        var itemsArray = new object[items.Length];
+
+        for (var i = 0; i < items.Length; ++i)
+            itemsArray[i] = memoryReadingTools.GetDictEntryValueRepresentation(items.Span[i]);
+
+        return itemsArray;
+    }
 
     static object ReadingFromPythonType_str(ulong address, LocalMemoryReadingTools memoryReadingTools)
     {
@@ -586,6 +709,10 @@ public class EveOnline64
         if (0x1000 < unicode_string_length)
             return "String too long.";
 
+        //  See the note on the empty case in `ReadPythonStringValue`.
+        if (unicode_string_length is 0)
+            return "";
+
         var stringBytesCount = (int)unicode_string_length * 2;
 
         var stringBytes =
@@ -682,10 +809,13 @@ public class EveOnline64
 
         var entriesOfInterest = new List<UITreeNode.DictEntry>();
 
+        var otherKeys = new List<string>();
+
         foreach (var entry in dictionaryEntries)
         {
             if (!DictEntriesOfInterestKeys.Contains(entry.Key))
             {
+                otherKeys.Add(entry.Key);
                 continue;
             }
 
@@ -705,7 +835,8 @@ public class EveOnline64
 
         return
             new UITreeNode.Bunch(
-                entriesOfInterest: entriesOfInterestJObject);
+                entriesOfInterest: entriesOfInterestJObject,
+                otherDictEntriesKeys: otherKeys);
     }
 
     static object ReadingFromPythonType_Link(ulong address, LocalMemoryReadingTools memoryReadingTools)
@@ -1309,6 +1440,16 @@ public class EveOnline64
 
         if (0 < maxLength && maxLength < (int)stringObject_ob_size || int.MaxValue < stringObject_ob_size)
             return "String too long.";
+
+        /*
+         * 2026-07-26 An empty string is not a failure. `ReadBytes` with a count of zero returns
+         * null, so without this every empty string in the reading -- an unset "_hint", the
+         * "currChars" buffer of a read-only text widget -- read as "Failed to read string bytes."
+         * and looked like a broken read of something present rather than an accurate read of
+         * nothing.
+         * */
+        if (stringObject_ob_size is 0)
+            return "";
 
         var stringBytes = memoryReader.ReadBytes(stringObjectAddress + 8 * 4, (int)stringObject_ob_size);
 

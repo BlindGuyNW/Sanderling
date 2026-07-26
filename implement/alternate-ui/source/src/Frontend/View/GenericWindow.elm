@@ -576,7 +576,31 @@ walk typeHierarchy insideCandidate node =
                                 { items = items, hasCandidate = True }
 
                             Nothing ->
-                                walkContainer typeHierarchy insideCandidate node
+                                --  Before the container walk, which would descend into the line
+                                --  objects the renderer left behind and offer each as a control.
+                                case paragraphProse node of
+                                    Just prose ->
+                                        { items = [ Prose prose ], hasCandidate = False }
+
+                                    Nothing ->
+                                        walkContainer typeHierarchy insideCandidate node
+
+
+{-| The text of a multi-line text widget -- an item description, a note, a mail body.
+
+The client keeps no copy of this text on the widget or on the line objects under it, so before
+`getParagraphsText` existed the whole subtree was textless and the container walk did the only
+thing it could: it offered each line as an unlabeled control, and an item description read as a
+column of numbers. The paragraphs are the widget's own text, so the widget speaks them and its
+children are not descended into.
+
+-}
+paragraphProse : UITreeNodeWithDisplayRegion -> Maybe ProseText
+paragraphProse node =
+    node.uiNode
+        |> EveOnline.ParseUserInterface.getParagraphsText
+        |> Maybe.andThen EveOnline.ParseUserInterface.discardUnreadableText
+        |> Maybe.map (\text -> { text = text, position = positionOfNode node })
 
 
 walkContainer : Dict.Dict String (List String) -> Bool -> UITreeNodeWithDisplayRegion -> WalkResult

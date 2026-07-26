@@ -27,6 +27,94 @@ class Program
         app.VersionOption(template: "-v|--version", shortFormVersion: "version " + AppVersionId);
 
         app.Command(
+            "explore-python-object",
+            exploreCmd =>
+            {
+                exploreCmd.Description =
+                    "Walk the CPython object graph outward from an address, expanding lists, tuples, dicts and instances, and report the strings found. Use this to locate text that the UI tree reading does not carry.";
+
+                var processIdParam =
+                    exploreCmd.Option(
+                        "--pid",
+                        "[Required] Id of the Windows process to read from.",
+                        CommandOptionType.SingleValue)
+                    .IsRequired(errorMessage: "From which process should I read?");
+
+                var addressParam =
+                    exploreCmd.Option(
+                        "--address",
+                        "[Required] Address of the python object to start from, decimal or 0x-prefixed hex.",
+                        CommandOptionType.SingleValue)
+                    .IsRequired(errorMessage: "Which object should I start from?");
+
+                var searchParam =
+                    exploreCmd.Option(
+                        "--search",
+                        "Only report strings containing this text. Omit to report every string found.",
+                        CommandOptionType.SingleValue);
+
+                var maxObjectsParam =
+                    exploreCmd.Option(
+                        "--max-objects",
+                        "Stop after examining this many objects (default 200000).",
+                        CommandOptionType.SingleValue);
+
+                var maxDepthParam =
+                    exploreCmd.Option(
+                        "--max-depth",
+                        "Stop following references at this depth (default 12).",
+                        CommandOptionType.SingleValue);
+
+                exploreCmd.OnExecute(() =>
+                {
+                    var processId = int.Parse(processIdParam.Value());
+
+                    var addressArgument = addressParam.Value().Trim();
+
+                    var address =
+                        addressArgument.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                        ? Convert.ToUInt64(addressArgument[2..], 16)
+                        : ulong.Parse(addressArgument);
+
+                    var searchTerm = searchParam.Value();
+
+                    var maxObjects =
+                        0 < maxObjectsParam.Value()?.Length ? int.Parse(maxObjectsParam.Value()) : 200_000;
+
+                    var maxDepth =
+                        0 < maxDepthParam.Value()?.Length ? int.Parse(maxDepthParam.Value()) : 12;
+
+                    var memoryReader = new MemoryReaderFromLiveProcess(processId);
+
+                    var explorer = new PythonObjectExplorer(memoryReader);
+
+                    var startTypeName = explorer.GetTypeName(address);
+
+                    Console.WriteLine(
+                        $"Exploring from 0x{address:X} (type '{startTypeName}'), max {maxObjects} objects, max depth {maxDepth}.");
+
+                    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+                    var findings = explorer.Explore(address, searchTerm, maxObjects, maxDepth);
+
+                    Console.WriteLine(
+                        $"Found {findings.Count} matching strings in {stopwatch.ElapsedMilliseconds} ms.");
+
+                    foreach (var finding in findings)
+                    {
+                        var value = finding.value.Replace("\n", "\\n").Replace("\r", "");
+
+                        if (300 < value.Length)
+                            value = value[..300] + "...";
+
+                        Console.WriteLine($"{finding.path}  ({finding.typeName})\n    {value}");
+                    }
+
+                    return 0;
+                });
+            });
+
+        app.Command(
             "save-process-sample",
             saveProcessSampleCmd =>
             {
@@ -518,7 +606,8 @@ public record UITreeNode(
         object value);
 
     public record Bunch(
-        System.Text.Json.Nodes.JsonObject entriesOfInterest);
+        System.Text.Json.Nodes.JsonObject entriesOfInterest,
+        IReadOnlyList<string> otherDictEntriesKeys = null);
 
     public IEnumerable<UITreeNode> EnumerateSelfAndDescendants() =>
         new[] { this }

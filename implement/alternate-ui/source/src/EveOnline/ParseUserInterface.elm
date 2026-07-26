@@ -4453,15 +4453,56 @@ centerFromDisplayRegion region =
 
 getDisplayText : EveOnline.MemoryReading.UITreeNode -> Maybe String
 getDisplayText uiNode =
-    [ "_setText", "_text" ]
+    (([ "_setText", "_text" ]
         |> List.filterMap
             (\displayTextPropertyName ->
                 uiNode.dictEntriesOfInterest
                     |> Dict.get displayTextPropertyName
                     |> Maybe.andThen getDisplayTextFromDictEntry
             )
+     )
+        ++ ([ getParagraphsText uiNode ] |> List.filterMap identity)
+    )
         |> List.sortBy (String.length >> negate)
         |> List.head
+
+
+{-| The text of a multi-line text widget: an item description, a note, a mail body.
+
+Those widgets carry neither `_setText` nor `_text`. The client hands the text straight to the
+renderer and the widget keeps no copy of its own, so a description reached the parser as a row of
+nodes named `entry_0`, `entry_1`, ... -- correct line heights and widths, not one character -- and
+the view, finding no text anywhere in the subtree, fell back to labelling each line with the
+client's internal name. A description read as a list of numbered buttons.
+
+What survives is `_sr.paragraphs`, one entry per logical paragraph. Paragraphs rather than the
+per-line objects on purpose: the line objects hold the text already broken at whatever wrap points
+the client drew, so joining them reads aloud as sentences chopped mid-clause. The blank paragraph
+between two blocks is kept, because it is the paragraph break.
+
+-}
+getParagraphsText : EveOnline.MemoryReading.UITreeNode -> Maybe String
+getParagraphsText uiNode =
+    uiNode.dictEntriesOfInterest
+        |> Dict.get "_sr"
+        |> Maybe.andThen
+            (Json.Decode.decodeValue
+                (Json.Decode.at [ "entriesOfInterest", "paragraphs" ]
+                    (Json.Decode.list Json.Decode.string)
+                )
+                >> Result.toMaybe
+            )
+        |> Maybe.andThen
+            (\paragraphs ->
+                case paragraphs |> List.filterMap discardUnreadableText of
+                    [] ->
+                        Nothing
+
+                    readable ->
+                        --  The client puts an empty paragraph where a break goes, so dropping the
+                        --  empties and rejoining on a blank line reproduces the break exactly.
+                        readable |> String.join "\n\n" |> Just
+            )
 
 
 getDisplayTextFromDictEntry : Json.Encode.Value -> Maybe String
