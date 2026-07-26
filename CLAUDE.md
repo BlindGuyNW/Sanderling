@@ -9,7 +9,7 @@ Sanderling reads the UI tree out of the memory of a running 64-bit EVE Online cl
 - `implement/read-memory-64-bit/` — C# / .NET 9 (Windows-only). Library + CLI (`read-memory-64-bit.exe`) that walks the game client's CPython objects and emits the UI tree as JSON.
 - `implement/alternate-ui/` — Elm application (backend web service + browser frontend) that consumes that JSON, parses it into game-domain types, and renders it as HTML. Built and run with the [Pine](https://github.com/pine-vm/pine) tool, not with `elm make`.
 
-The two are **not** linked by a project reference. The alternate UI loads a *published release* of the C# assemblies at runtime (see "Version pinning" below).
+The two are **not** linked by a project reference. The alternate UI loads the C# assemblies at runtime, pinned by content hash — in this fork that hash resolves to a locally-built DLL committed under `implement/read-memory-64-bit/prebuilt/`, so a reader change *does* reach the UI, but only after you rebuild, refresh that file, and update the hash. See "Changing the C# reader" below; getting this wrong fails silently.
 
 ## Build, test, run
 
@@ -21,7 +21,7 @@ dotnet test    ./implement/read-memory-64-bit/read-memory-64-bit.csproj --logger
 dotnet publish ./implement/read-memory-64-bit/read-memory-64-bit.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:IncludeAllContentForSelfExtract=true -p:PublishReadyToRun=true --output ./publish
 ```
 
-`implement/read-memory-64-bit/build.bat` is a shorthand for `dotnet publish -p:Platform=x64`. CI (`.github/workflows/test-and-publish.yml`) additionally publishes a separate-assemblies variant — that is the artifact the alternate UI consumes.
+`implement/read-memory-64-bit/build.bat` is a shorthand for `dotnet publish -p:Platform=x64`. CI (`.github/workflows/test-and-publish.yml`) additionally publishes a separate-assemblies variant — that is the artifact the alternate UI *would* consume from a release, but this fork pins a committed local build instead; see "Changing the C# reader" below.
 
 Alternate UI (requires the `pine` executable on PATH — download from the pine-vm releases page; needs the .NET 9 runtime):
 
@@ -65,13 +65,13 @@ EVE client process memory
 ```
 
 C# side (`implement/read-memory-64-bit/`):
-- `EveOnline64.cs` is the core, and the only large file. It reads CPython 2.7 object layouts directly: `PyObject` header offsets, per-type readers registered in `specializedReadingFromPythonType` (`str`, `unicode`, `int`, `bool`, `float`, `PyColor`, `Bunch`, `Link`), and `DictEntriesOfInterestKeys` — the allowlist of Python dict keys copied into each node. **Adding a new game-client property to the reading usually means adding its key to `DictEntriesOfInterestKeys`.** A `MemoryReadingCache` keyed by address prevents re-reading shared objects.
+- `EveOnline64.cs` is the core, and the only large file. It reads CPython 2.7 object layouts directly: `PyObject` header offsets, per-type readers registered in `specializedReadingFromPythonType` (`str`, `unicode`, `int`, `bool`, `float`, `PyColor`, `Bunch`, `Link`, `set`/`frozenset`, `InteractionState`), and `DictEntriesOfInterestKeys` — the allowlist of Python dict keys copied into each node. **Adding a new game-client property to the reading usually means adding its key to `DictEntriesOfInterestKeys`** — and then rebuilding the pinned assembly, or the Elm side never sees it (see "Changing the C# reader"). A key whose value is a Python type with no entry in `specializedReadingFromPythonType` serializes as a bare `{address, pythonObjectTypeName}` and needs a reader too. A `MemoryReadingCache` keyed by address prevents re-reading shared objects.
 - `IMemoryReader` has two implementations: `MemoryReaderFromLiveProcess` (ReadProcessMemory) and `MemoryReaderFromProcessSample` (replay from a saved sample). Everything above the interface works identically for both.
 - `Program.cs` is CLI wiring only, plus the `UITreeNode` record and screenshot helpers. `WinApi.cs`, `ProcessSample.cs`, `ZipArchive.cs` are support.
 
 Elm side (`implement/alternate-ui/source/src/`):
 - `Backend/Main.elm` — Pine web service. Spawns a *volatile process* from `EveOnline/VolatileProcess.csx` and proxies `/api/` requests from the frontend into it.
-- `EveOnline/VolatileProcess.csx` — C# script executed inside the Pine runtime on the machine with the game client. It calls into the published `read_memory_64_bit` assemblies (`EveOnline64.ReadUITreeFromAddress`, `MemoryReaderFromLiveProcess`) and handles UI-root search, reading, and mouse/keyboard effects. It has **two input paths**, selected by the `bringWindowToForeground` flag on the request — see "Input to the game client" below.
+- `EveOnline/VolatileProcess.csx` — C# script executed inside the Pine runtime on the machine with the game client. It calls into the hash-pinned `read_memory_64_bit` assemblies (`EveOnline64.ReadUITreeFromAddress`, `MemoryReaderFromLiveProcess`) and handles UI-root search, reading, and mouse/keyboard effects. It has **two input paths**, selected by the `bringWindowToForeground` flag on the request — see "Input to the game client" below.
 - `EveOnline/VolatileProcessInterface.elm` — the hand-written request/response contract with the `.csx` script; the JSON encoders/decoders on both sides must be edited together.
 - `InterfaceToFrontendClient.elm` — the frontend↔backend contract; its JSON converters are *generated* by the Pine compiler (`CompilationInterface/GenerateJsonConverters.elm` contains placeholder bodies that the compiler replaces — do not implement them by hand).
 - `CompilationInterface/*.elm` — Pine compiler hooks generally: `SourceFiles.elm` embeds `VolatileProcess.csx` as a string, `ElmMake.elm` embeds the compiled frontend HTML into the backend. The `"The compiler replaces this declaration."` bodies are intentional.
@@ -85,10 +85,27 @@ every window renders through the generic shell whether or not it has a specializ
 come from the client rather than hand-written tables, and heading levels express nesting. Read it
 before adding or changing a view.
 
-**Version pinning across components.** When a new `read-memory-64-bit` release is cut, the alternate UI is moved to it by editing the URL comment and the following `#r "sha256:..."` line at the top of `EveOnline/VolatileProcess.csx` (see commit `5790e12`). Keep these in sync when bumping:
+**Changing the C# reader reaches the alternate UI without cutting a release.** This is the single most misleading thing to get wrong here, so it is spelled out: `VolatileProcess.csx` pins the reader assembly *by content hash only*, and that hash currently resolves to a **locally-built assembly committed at `implement/read-memory-64-bit/prebuilt/read-memory-64-bit.dll`**, not to anything published. `start-alternate-ui.ps1` hashes that file and copies it into pine's blob library (`%LOCALAPPDATA%/pine/.cache/blob-library/by-sha256/`) before every deploy, which is what makes the `#r` resolve. The upstream release URL is kept only as a `Superseded release pin:` comment above it.
+
+So the loop for a reader change — for example adding a key to `DictEntriesOfInterestKeys` so a new client property reaches the Elm side — is:
+
+```powershell
+dotnet build ./implement/read-memory-64-bit/read-memory-64-bit.csproj -c Release
+Copy-Item ./implement/read-memory-64-bit/bin/Release/net9.0-windows/read-memory-64-bit.dll `
+          ./implement/read-memory-64-bit/prebuilt/read-memory-64-bit.dll -Force
+(Get-FileHash ./implement/read-memory-64-bit/prebuilt/read-memory-64-bit.dll -Algorithm SHA256).Hash.ToLower()
+#  then put that hash in the `#r "sha256:..."` line in VolatileProcess.csx, and redeploy
+./start-alternate-ui.ps1
+```
+
+Commit the rebuilt `prebuilt/*.dll` together with the `.csx` pin, or a fresh clone deploys a reader that disagrees with the source. Skipping either the copy or the hash edit fails *silently and misleadingly*: the previous assembly still resolves, so the deploy succeeds and the UI works — it just never sees the new dict key, which reads as "the client doesn't expose that" rather than "you didn't ship the reader".
+
+The CLI (`read-memory-64-bit.exe`) runs straight from `bin/`, so it shows a reader change one build earlier than the deployed UI does. That makes it the right tool for measuring a new key before wiring anything: it also keeps `otherDictEntriesKeys`, which the alternate UI's path strips via `WithOtherDictEntriesRemoved()`.
+
+Keep these in sync when bumping versions:
 - `Program.cs` → `AppVersionId`
 - `Common/App.elm` → `versionId`
-- `VolatileProcess.csx` → release URL + assembly hash
+- `VolatileProcess.csx` → assembly hash (plus the release URL comment, if a release is ever pinned again)
 - `implement/alternate-ui/README.md` and `.github/workflows/build-alternate-ui-frontend-html.yml` → the pinned commit hash / pine version used in the documented `--deploy=` command (see commit `b9fbc74`)
 
 **Parsing fixes are driven by user-reported samples.** The recurring change shape (e.g. commit `d2ffa5b`) is: a player reports the client showing a form the parser doesn't handle → adjust the parse function in `ParseUserInterface.elm` → add the exact observed string as a case in `tests/ParseMemoryReadingTest.elm`, with a comment giving the date and the forum/session-recording source. Follow that comment convention; the existing cases document real client variations (thousands separators `. , space ’ '`, localized modifier keys `STRG`/`UMSCH`, both `<url=…>` and `<a href=…>` markup) and must not be regressed.
