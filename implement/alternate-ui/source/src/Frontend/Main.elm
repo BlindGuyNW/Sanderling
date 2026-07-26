@@ -59,6 +59,48 @@ effectSequenceSpacingMilliseconds =
     30
 
 
+{-| How long the pointer has to rest on a node before the game client shows its tooltip. Measured
+2026-07-26 against a live client: a tooltip was already present 360 ms after a posted hover on the
+Neocom's character button, and absent 230 ms after one on the skills button. The wait is spent
+inside the effect sequence rather than in the page, so the volatile process comes back free
+exactly when there is something to read, and the reading that follows needs no second attempt in
+the common case.
+-}
+tooltipSettleDelayMilliseconds : Int
+tooltipSettleDelayMilliseconds =
+    400
+
+
+{-| When to stop asking and answer "no tooltip". Generous next to the 400 ms the client takes,
+because a reading of ours can still be queued behind a whole-tree reading that was already on its
+way when the gesture was pressed, and those take up to five seconds.
+-}
+tooltipInspectionTimeoutMilliseconds : Int
+tooltipInspectionTimeoutMilliseconds =
+    9000
+
+
+{-| How many readings of the tooltip layer one inspection may cost. The hover has already waited
+for the client before the first of them, so a node with a tooltip answers on that one; the rest
+are there for the case where the first reading was queued behind a whole-tree reading and so
+arrived describing a moment before the hover landed.
+-}
+tooltipInspectionReadsPerGesture : Int
+tooltipInspectionReadsPerGesture =
+    3
+
+
+{-| The layer the client puts tooltips in. Measured 2026-07-26 by hovering a spread of controls
+and reporting where the `TooltipPanel` landed: the Neocom's character and inventory buttons and
+the notification feed's icon all produced one in `l_menu`, and `l_hint`, despite the name, stayed
+empty throughout. A tooltip that appears somewhere else is not lost -- the inspection falls back
+to searching whole readings, it just answers at the speed of one.
+-}
+tooltipLayerName : String
+tooltipLayerName =
+    "l_menu"
+
+
 main : Program () State Event
 main =
     Browser.application
@@ -84,18 +126,46 @@ type alias State =
     }
 
 
-{-| The Shift+F11 gesture: hover a node of the game client, then watch the following readings
-for the tooltip the client shows in response. Waiting is not open-ended -- an element with no
-tooltip would otherwise wait forever, so after a few readings the answer is "no tooltip".
+{-| The Shift+F11 gesture: hover a node of the game client, then read back the tooltip the client
+shows in response. Waiting is not open-ended -- an element with no tooltip would otherwise wait
+forever, so after a few seconds the answer is "no tooltip".
 
 The result is kept until the next inspection so the answer can be read again by navigating to
 it, not only heard once from the live region announcement.
 
+The answer does not come from the ordinary readings, because those are far too slow to answer a
+gesture: measured against a live client 2026-07-26, one whole-tree reading is 1.25 MB and takes
+4.0-5.1 seconds, so waiting for the next one put the announcement about six seconds after the
+keypress -- long enough that the feature read as broken. Instead the inspection reads back only
+the layer the tooltip appears in, which is 40 KB and takes about 250 ms. `tooltipLayerAddress` is
+that layer's address, taken from the reading that was current when the gesture was pressed;
+`Nothing` when it could not be resolved, and then the slow path of watching whole readings still
+applies, so nothing is worse than before.
+
 -}
 type TooltipInspectionState
     = NoTooltipInspection
-    | TooltipInspectionPending { beginTimeMilli : Int }
+    | TooltipInspectionPending TooltipInspectionPendingStruct
     | TooltipInspectionCompleted { texts : List String }
+
+
+type alias TooltipInspectionPendingStruct =
+    { beginTimeMilli : Int
+    , windowId : EveOnline.VolatileProcessInterface.WindowId
+    , tooltipLayerAddress : Maybe String
+
+    {- Whether a request of ours is already on its way to the volatile process. It runs one
+       request at a time, so issuing another before the last answered would only queue behind it.
+    -}
+    , requestOutstanding : Bool
+
+    {- How many more times to look before answering "no tooltip". Counted rather than only timed,
+       because most nodes have no tooltip at all: asking again for as long as the timeout allows
+       would keep the volatile process busy for seconds on end -- and it is the same one the page
+       reads the game through, so that time is taken from the reading the player is looking at.
+    -}
+    , readsLeft : Int
+    }
 
 
 type alias ReadFromLiveProcessState =
@@ -253,7 +323,9 @@ update : Event -> State -> ( State, Cmd Event )
 update event stateBefore =
     case event of
         BackendResponse { request, result } ->
-            ( stateBefore |> integrateBackendResponse { request = request, result = result }, Cmd.none )
+            stateBefore
+                |> integrateBackendResponse { request = request, result = result }
+                |> continueTooltipInspection
 
         UrlChange url ->
             ( stateBefore, Cmd.none )
@@ -320,11 +392,34 @@ update event stateBefore =
                 timeMilli =
                     Time.posixToMillis time
 
+                {- A whole reading started now would occupy the volatile process for several
+                   seconds, and the tooltip the player is waiting for would have to queue behind
+                   it. The page goes without one refresh; the gesture answers in about a second
+                   instead of six. Only for an inspection that reads a layer of its own -- the
+                   slow path resolves from these very readings and would wait forever without
+                   them.
+                -}
+                inspectionReadsForItself =
+                    case stateBefore.tooltipInspection of
+                        TooltipInspectionPending pending ->
+                            pending.tooltipLayerAddress /= Nothing
+
+                        _ ->
+                            False
+
                 ( readFromLiveProcessState, cmd ) =
-                    (stateBefore.readFromLiveProcess |> decideNextStepToReadFromLiveProcess { timeMilli = timeMilli })
-                        |> Tuple.mapSecond .nextCmd
+                    if inspectionReadsForItself then
+                        ( stateBefore.readFromLiveProcess, Cmd.none )
+
+                    else
+                        (stateBefore.readFromLiveProcess |> decideNextStepToReadFromLiveProcess { timeMilli = timeMilli })
+                            |> Tuple.mapSecond .nextCmd
+
+                ( state, inspectionCmd ) =
+                    { stateBefore | timeMilli = timeMilli, readFromLiveProcess = readFromLiveProcessState }
+                        |> continueTooltipInspection
             in
-            ( { stateBefore | timeMilli = timeMilli, readFromLiveProcess = readFromLiveProcessState }, cmd )
+            ( state, Cmd.batch [ cmd, inspectionCmd ] )
 
         UserInputDownloadJsonFile jsonString ->
             ( stateBefore, File.Download.string "memory-reading.json" "application/json" jsonString )
@@ -342,6 +437,13 @@ update event stateBefore =
 
                 Nothing ->
                     let
+                        lastParsedReading =
+                            stateBefore.readFromLiveProcess
+                                |> decideNextStepToReadFromLiveProcess { timeMilli = stateBefore.timeMilli }
+                                |> Tuple.second
+                                |> .lastMemoryReading
+                                |> Maybe.andThen (.memoryReading >> .parseResult >> Result.toMaybe)
+
                         {- The scroll state of the game client is not something the player should
                            have to know about: an entry the page lists is an entry that can be
                            clicked. When the node sits outside its scroll container's visible
@@ -355,11 +457,7 @@ update event stateBefore =
                                     Nothing
 
                                 _ ->
-                                    stateBefore.readFromLiveProcess
-                                        |> decideNextStepToReadFromLiveProcess { timeMilli = stateBefore.timeMilli }
-                                        |> Tuple.second
-                                        |> .lastMemoryReading
-                                        |> Maybe.andThen (.memoryReading >> .parseResult >> Result.toMaybe)
+                                    lastParsedReading
                                         |> Maybe.andThen (scrollToRevealNode sendInput.uiNode)
 
                         targetRegion =
@@ -432,11 +530,19 @@ update event stateBefore =
                                         clickLocation
                                         |> sequenceElements effectSequenceSpacingMilliseconds
 
-                                --  Parking the pointer is the whole effect: the game client
-                                --  shows the tooltip on its own once the pointer rests there.
+                                {- Parking the pointer is the whole effect: the game client shows
+                                   the tooltip on its own once the pointer rests there. The wait
+                                   for it to do so is part of the sequence, so that the request
+                                   comes back at the moment there is something to read rather
+                                   than before it.
+                                -}
                                 MouseHover ->
-                                    [ Common.EffectOnWindow.MouseMoveTo clickLocation ]
+                                    ([ Common.EffectOnWindow.MouseMoveTo clickLocation ]
                                         |> sequenceElements effectSequenceSpacingMilliseconds
+                                    )
+                                        ++ [ EveOnline.VolatileProcessInterface.DelayMilliseconds
+                                                tooltipSettleDelayMilliseconds
+                                           ]
 
                                 --  The slower spacing gives the client a frame to see each stage
                                 --  of the drag while the button is down; 150 ms per step moved
@@ -528,7 +634,14 @@ update event stateBefore =
                                 MouseHover ->
                                     { stateBefore
                                         | tooltipInspection =
-                                            TooltipInspectionPending { beginTimeMilli = stateBefore.timeMilli }
+                                            TooltipInspectionPending
+                                                { beginTimeMilli = stateBefore.timeMilli
+                                                , windowId = sendInput.windowId
+                                                , tooltipLayerAddress =
+                                                    lastParsedReading |> Maybe.andThen tooltipLayerAddressFromReading
+                                                , requestOutstanding = True
+                                                , readsLeft = tooltipInspectionReadsPerGesture
+                                                }
                                     }
 
                                 _ ->
@@ -915,37 +1028,80 @@ integrateBackendResponse { request, result } stateBefore =
                 readFromLiveProcessBefore =
                     stateBefore.readFromLiveProcess
 
+                parsedReading =
+                    readMemoryResult
+                        |> Result.toMaybe
+                        |> Maybe.andThen (.memoryReading >> .parseResult >> Result.toMaybe)
+
+                {- Which of the two kinds of reading this answer belongs to. They are told apart
+                   by the address the reading started from, and telling them apart matters: a
+                   tooltip inspection reads back a single layer, and letting that stand as the
+                   last whole-tree reading would replace everything the page shows with the
+                   contents of that one layer.
+                -}
+                tooltipLayerReadingPending =
+                    case stateBefore.tooltipInspection of
+                        TooltipInspectionPending pending ->
+                            if pending.tooltipLayerAddress == Just readFromWindow.uiRootAddress then
+                                Just pending
+
+                            else
+                                Nothing
+
+                        _ ->
+                            Nothing
+
+                --  The slow path, for an inspection that could not resolve a layer to read.
                 tooltipInspection =
                     case stateBefore.tooltipInspection of
                         TooltipInspectionPending pending ->
-                            case
-                                readMemoryResult
-                                    |> Result.toMaybe
-                                    |> Maybe.andThen (.memoryReading >> .parseResult >> Result.toMaybe)
-                            of
-                                Nothing ->
-                                    stateBefore.tooltipInspection
-
-                                Just parseSuccess ->
+                            case ( pending.tooltipLayerAddress, parsedReading ) of
+                                ( Nothing, Just parseSuccess ) ->
                                     resolveTooltipInspection
-                                        { beginTimeMilli = pending.beginTimeMilli
-                                        , readingRequestTimeMilli =
+                                        { readingRequestTimeMilli =
                                             readFromLiveProcessBefore.lastPendingRequestToReadFromGameClientTimeMilli
                                                 |> Maybe.withDefault stateBefore.timeMilli
                                         }
+                                        pending
                                         parseSuccess
+
+                                _ ->
+                                    stateBefore.tooltipInspection
 
                         other ->
                             other
             in
-            { stateBefore
-                | readFromLiveProcess =
-                    { readFromLiveProcessBefore
-                        | readMemoryResult = Just readMemoryResult
-                        , lastPendingRequestToReadFromGameClientTimeMilli = Nothing
+            case tooltipLayerReadingPending of
+                Just pending ->
+                    { stateBefore
+                        | tooltipInspection =
+                            resolveTooltipInspectionFromLayerReading
+                                { timeMilli = stateBefore.timeMilli }
+                                pending
+                                parsedReading
                     }
-                , tooltipInspection = tooltipInspection
-            }
+
+                Nothing ->
+                    { stateBefore
+                        | readFromLiveProcess =
+                            { readFromLiveProcessBefore
+                                | readMemoryResult = Just readMemoryResult
+                                , lastPendingRequestToReadFromGameClientTimeMilli = Nothing
+                            }
+                        , tooltipInspection = tooltipInspection
+                    }
+
+        {- The hover of a tooltip inspection is sent as an effect sequence that ends in the wait
+           for the client to show the tooltip, so this answer means the volatile process is free
+           again and there is something to read. `continueTooltipInspection` sends that reading.
+        -}
+        InterfaceToFrontendClient.RunInVolatileProcessRequest (EveOnline.VolatileProcessInterface.EffectSequenceOnWindow _) ->
+            case stateBefore.tooltipInspection of
+                TooltipInspectionPending pending ->
+                    { stateBefore | tooltipInspection = TooltipInspectionPending { pending | requestOutstanding = False } }
+
+                _ ->
+                    stateBefore
 
         InterfaceToFrontendClient.RunInVolatileProcessRequest (EveOnline.VolatileProcessInterface.SearchUIRootAddress searchUIRootRequest) ->
             let
@@ -1008,33 +1164,119 @@ integrateBackendResponse { request, result } stateBefore =
             stateBefore
 
 
-{-| Whether a reading settles a pending tooltip inspection.
+{-| What to do next about a pending tooltip inspection: send the reading that answers it, give up
+on it, or wait for an answer that is already on its way.
+
+The reading covers only the layer tooltips appear in, so it costs a fraction of a whole-tree
+reading and the gesture can answer in about a second instead of six. One request at a time,
+because the volatile process serves one at a time anyway.
+
+-}
+continueTooltipInspection : State -> ( State, Cmd Event )
+continueTooltipInspection stateBefore =
+    case stateBefore.tooltipInspection of
+        TooltipInspectionPending pending ->
+            case pending.tooltipLayerAddress of
+                --  Nothing to read from: the slow path answers this one, from whole readings.
+                Nothing ->
+                    ( stateBefore, Cmd.none )
+
+                Just tooltipLayerAddress ->
+                    if pending.requestOutstanding then
+                        ( stateBefore, Cmd.none )
+
+                    else if
+                        (pending.readsLeft < 1)
+                            || (pending.beginTimeMilli + tooltipInspectionTimeoutMilliseconds < stateBefore.timeMilli)
+                    then
+                        ( { stateBefore | tooltipInspection = TooltipInspectionCompleted { texts = [] } }, Cmd.none )
+
+                    else
+                        ( { stateBefore
+                            | tooltipInspection =
+                                TooltipInspectionPending
+                                    { pending | requestOutstanding = True, readsLeft = pending.readsLeft - 1 }
+                          }
+                        , apiRequestCmd
+                            (InterfaceToFrontendClient.RunInVolatileProcessRequest
+                                (EveOnline.VolatileProcessInterface.ReadFromWindow
+                                    { windowId = pending.windowId
+                                    , uiRootAddress = tooltipLayerAddress
+                                    }
+                                )
+                            )
+                        )
+
+        _ ->
+            ( stateBefore, Cmd.none )
+
+
+{-| Whether a reading of the tooltip layer settles the inspection that asked for it.
+
+An empty layer is not yet an answer: the client may still be about to show the tooltip, and a
+reading that was queued behind a whole-tree reading can be older than it looks. So an empty one
+only asks again, until the inspection times out and the answer becomes "no tooltip" -- ending the
+wait is what keeps the page from promising a tooltip that is never coming.
+
+-}
+resolveTooltipInspectionFromLayerReading :
+    { timeMilli : Int }
+    -> TooltipInspectionPendingStruct
+    -> Maybe ParseMemoryReadingSuccess
+    -> TooltipInspectionState
+resolveTooltipInspectionFromLayerReading { timeMilli } pending maybeParseSuccess =
+    case maybeParseSuccess |> Maybe.map tooltipTextsFromReading of
+        --  The reading failed. Asking again would most likely fail the same way.
+        Nothing ->
+            TooltipInspectionCompleted { texts = [] }
+
+        Just [] ->
+            if pending.beginTimeMilli + tooltipInspectionTimeoutMilliseconds < timeMilli then
+                TooltipInspectionCompleted { texts = [] }
+
+            else
+                TooltipInspectionPending { pending | requestOutstanding = False }
+
+        Just texts ->
+            TooltipInspectionCompleted { texts = texts }
+
+
+{-| The address of the layer the client shows tooltips in, to read back on its own.
+-}
+tooltipLayerAddressFromReading : ParseMemoryReadingSuccess -> Maybe String
+tooltipLayerAddressFromReading parseSuccess =
+    parseSuccess.parsedUserInterface.layers
+        |> List.filter (.name >> (==) tooltipLayerName)
+        |> List.head
+        |> Maybe.map (.uiNode >> .uiNode >> .pythonObjectAddress)
+
+
+{-| Whether a whole reading settles a pending tooltip inspection. The slow path, for an inspection
+that could not resolve a layer of its own to read.
 
 A reading requested before the hover had time to land -- the effect's own latency plus the
 client's delay before showing a tooltip -- can only show the state from before the gesture,
 including a leftover tooltip from wherever the pointer previously rested, so it neither confirms
-nor denies. From then on, the first reading with tooltip text answers the inspection. After a few
-seconds of readings without one, the answer is that the node has no tooltip: ending the wait is
-what keeps the page from promising a tooltip that is never coming. Readings arrive about once a
-second, so the thresholds are coarse on purpose.
+nor denies. From then on, the first reading with tooltip text answers the inspection.
 
 -}
 resolveTooltipInspection :
-    { beginTimeMilli : Int, readingRequestTimeMilli : Int }
+    { readingRequestTimeMilli : Int }
+    -> TooltipInspectionPendingStruct
     -> ParseMemoryReadingSuccess
     -> TooltipInspectionState
-resolveTooltipInspection { beginTimeMilli, readingRequestTimeMilli } parseSuccess =
-    if readingRequestTimeMilli < beginTimeMilli + 800 then
-        TooltipInspectionPending { beginTimeMilli = beginTimeMilli }
+resolveTooltipInspection { readingRequestTimeMilli } pending parseSuccess =
+    if readingRequestTimeMilli < pending.beginTimeMilli + 800 then
+        TooltipInspectionPending pending
 
     else
         case tooltipTextsFromReading parseSuccess of
             [] ->
-                if beginTimeMilli + 5000 < readingRequestTimeMilli then
+                if pending.beginTimeMilli + tooltipInspectionTimeoutMilliseconds < readingRequestTimeMilli then
                     TooltipInspectionCompleted { texts = [] }
 
                 else
-                    TooltipInspectionPending { beginTimeMilli = beginTimeMilli }
+                    TooltipInspectionPending pending
 
             texts ->
                 TooltipInspectionCompleted { texts = texts }
@@ -2658,7 +2900,19 @@ inputRouteFromInputConfig inputRouteConfig =
             { uiNode = uiNode
             , input = inputKind
             , windowId = inputRouteConfig.windowId
-            , delayMilliseconds = Just inputDelayDefaultMilliseconds
+            , delayMilliseconds =
+                case inputKind of
+                    {- The delay above guards against a real mouse click on the page landing on
+                       the game client as well. A hover is only ever reached from the keyboard and
+                       presses no button, so it has nothing to be separated from, and the delay
+                       would be a third of a second added to a gesture whose whole worth is being
+                       quick to answer.
+                    -}
+                    MouseHover ->
+                        Nothing
+
+                    _ ->
+                        Just inputDelayDefaultMilliseconds
             }
 
 
