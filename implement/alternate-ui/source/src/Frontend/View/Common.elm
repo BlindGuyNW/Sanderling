@@ -5,6 +5,8 @@ module Frontend.View.Common exposing
     , control
     , controlActivateOnly
     , controlElement
+    , controlIsSelected
+    , decodeBoolOrInt
     , heading
     , inReadingOrder
     , isVisible
@@ -323,6 +325,18 @@ controlElementForInput maybeInputRoute label node canMenu checkState activateInp
                                     )
                                 ]
                        )
+                    --  `aria-current` rather than `aria-selected`: the latter is only honored on
+                    --  role="tab"/option/row/gridcell/treeitem, and these are plain buttons in a
+                    --  list. Giving them role="tab" would mean building a real tablist -- with the
+                    --  arrow-key navigation and the aria-controls panel relationship a screen
+                    --  reader then expects -- which the generic shell does not model. `aria-current`
+                    --  needs no role and says the true thing: this is the current one of its set.
+                    ++ (if controlIsSelected node then
+                            [ HA.attribute "aria-current" "true" ]
+
+                        else
+                            []
+                       )
                 )
                 [ Html.text label ]
 
@@ -366,26 +380,64 @@ controlIsDisabled node =
                 |> Dict.get key
                 |> Maybe.andThen (Json.Decode.decodeValue decoder >> Result.toMaybe)
 
-        boolOrInt =
-            Json.Decode.oneOf
-                [ Json.Decode.bool
-                , Json.Decode.int |> Json.Decode.map (\asInt -> asInt /= 0)
-                ]
-
         --  An element with no reader of its own stays an object; it is not `disabled`, and
         --  decoding the list must not fail because of it.
         interactionStateNames =
             Json.Decode.list
                 (Json.Decode.oneOf [ Json.Decode.string, Json.Decode.succeed "" ])
     in
-    [ dictEntry "enabled" boolOrInt |> Maybe.map not
-    , dictEntry "isDisabled" boolOrInt
-    , dictEntry "_enabled" boolOrInt |> Maybe.map not
+    [ dictEntry "enabled" decodeBoolOrInt |> Maybe.map not
+    , dictEntry "isDisabled" decodeBoolOrInt
+    , dictEntry "_enabled" decodeBoolOrInt |> Maybe.map not
     , dictEntry "_interaction_state" interactionStateNames
         |> Maybe.map (List.member "disabled")
     ]
         |> List.filterMap identity
         |> List.any identity
+
+
+{-| Whether the client holds this control to be the current one of its set.
+
+Two names, by family, both measured 2026-07-25 on the `Imicus (Frigate): Information` window and
+the station lobby beside it:
+
+  - `_selected` on `Tab`, `InventoryTab` and `SideNavigationEntry`, and on `ColumnHeader`, where it
+    marks the sorted column. `True` on exactly one member of each strip.
+  - `isSelected` on `SkillPanelToggleButtonLarge` and the `ButtonIcon` family.
+
+Where neither is present the drawing still decides, which keeps the inventory container tree
+reading as it did: the client marks a selected list entry with a `SelectionIndicatorLine` inside
+the entry's own subtree. That test cannot reach a tab strip, which draws its one line beside the
+tabs rather than inside the selected one, and the keys above are what close that gap.
+
+-}
+controlIsSelected : UITreeNodeWithDisplayRegion -> Bool
+controlIsSelected node =
+    let
+        selectedFlag key =
+            node.uiNode.dictEntriesOfInterest
+                |> Dict.get key
+                |> Maybe.andThen (Json.Decode.decodeValue decodeBoolOrInt >> Result.toMaybe)
+    in
+    case ( selectedFlag "_selected", selectedFlag "isSelected" ) of
+        ( Just selected, _ ) ->
+            selected
+
+        ( Nothing, Just selected ) ->
+            selected
+
+        ( Nothing, Nothing ) ->
+            EveOnline.ParseUserInterface.subtreeShowsSelectionIndicator node
+
+
+{-| The client writes a flag either as a python bool or as 0/1, depending on the widget.
+-}
+decodeBoolOrInt : Json.Decode.Decoder Bool
+decodeBoolOrInt =
+    Json.Decode.oneOf
+        [ Json.Decode.bool
+        , Json.Decode.int |> Json.Decode.map (\asInt -> asInt /= 0)
+        ]
 
 
 entryHtml : Context event -> Entry -> Html.Html event

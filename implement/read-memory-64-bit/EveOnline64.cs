@@ -416,7 +416,17 @@ public class EveOnline64
              * */
             "_selected",
             "isSelected",
-            "_checked");
+            "_checked",
+
+            /*
+             * 2026-07-25 Which way a sorted column is sorted, on ColumnHeader: 1 ascending, -1
+             * descending. Measured rather than assumed, by clicking the station hangar list's Name
+             * header and re-reading: "_direction" went 1 -> -1 on that header alone while the six
+             * others stayed at 1, and the rows flipped from A-Z to Z-A (with the active ship pinned
+             * at the top in both). The uniform 1 on unsorted columns is a default and means
+             * nothing; only the header whose "_selected" is true is sorted at all.
+             * */
+            "_direction");
 
     struct LocalMemoryReadingTools
     {

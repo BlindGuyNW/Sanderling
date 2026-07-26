@@ -79,8 +79,24 @@ type ContentItem
 
 type alias TableData =
     { caption : Maybe String
-    , headers : List String
+    , headers : List TableHeader
     , rows : List TableRow
+    }
+
+
+{-| One column header, and the `aria-sort` value for it when the client sorts by that column.
+
+`ColumnHeader._selected` marks the sorted column and `_direction` says which way, 1 ascending and
+-1 descending. Both measured on the station hangar list 2026-07-25 by clicking its `Name` header
+and re-reading: `_direction` went 1 to -1 on that header alone, the other six holding at 1, and
+the rows flipped from A-Z to Z-A. The uniform 1 across unsorted columns is a default that means
+nothing, which is why `_selected` has to gate it -- reading `_direction` alone would announce all
+seven columns as ascending.
+
+-}
+type alias TableHeader =
+    { text : String
+    , ariaSort : Maybe String
     }
 
 
@@ -367,7 +383,20 @@ tableHtml context table =
     let
         headerCells =
             table.headers
-                |> List.map (\header -> Html.th [ HA.scope "col" ] [ Html.text header ])
+                |> List.map
+                    (\header ->
+                        Html.th
+                            (HA.scope "col"
+                                :: (case header.ariaSort of
+                                        Just ariaSort ->
+                                            [ HA.attribute "aria-sort" ariaSort ]
+
+                                        Nothing ->
+                                            []
+                                   )
+                            )
+                            [ Html.text header.text ]
+                    )
 
         rowHtml row =
             case fitCellsToColumns (List.length table.headers) row.cells of
@@ -776,7 +805,12 @@ tableFromScrollNode scrollNode =
                 |> List.filter (.uiNode >> .pythonObjectTypeName >> (==) "ColumnHeader")
                 |> List.filter Common.isVisible
                 |> List.sortBy (.totalDisplayRegion >> .x)
-                |> List.map (\headerNode -> textOfSubtree headerNode |> Maybe.withDefault "")
+                |> List.map
+                    (\headerNode ->
+                        { text = textOfSubtree headerNode |> Maybe.withDefault ""
+                        , ariaSort = ariaSortOfColumnHeader headerNode
+                        }
+                    )
 
         rowNodes =
             scrollNode
@@ -1559,7 +1593,7 @@ checkboxState typeHierarchy node =
         checkedFlag =
             node.uiNode.dictEntriesOfInterest
                 |> Dict.get "_checked"
-                |> Maybe.andThen (Json.Decode.decodeValue decodeBoolOrInt >> Result.toMaybe)
+                |> Maybe.andThen (Json.Decode.decodeValue Common.decodeBoolOrInt >> Result.toMaybe)
 
         drawsCheckMarkSprite =
             node
@@ -1575,6 +1609,29 @@ checkboxState typeHierarchy node =
 
     else
         Nothing
+
+
+{-| The `aria-sort` value for a `ColumnHeader`: `Nothing` unless the list is sorted by it. See
+`TableHeader` for how the two dict entries this reads were measured.
+-}
+ariaSortOfColumnHeader : UITreeNodeWithDisplayRegion -> Maybe String
+ariaSortOfColumnHeader headerNode =
+    if not (Common.controlIsSelected headerNode) then
+        Nothing
+
+    else
+        case EveOnline.ParseUserInterface.getFixedNumberFromDictEntries "_direction" headerNode.uiNode of
+            Just direction ->
+                if direction < 0 then
+                    Just "descending"
+
+                else
+                    Just "ascending"
+
+            Nothing ->
+                --  Sorted by this column, but with no direction in the reading. `other` is the
+                --  spec's value for exactly that: sorted, direction unspecified.
+                Just "other"
 
 
 {-| The word for the client's selection highlight, appended to a control's label.
@@ -1599,38 +1656,11 @@ keys above are what close that gap.
 -}
 selectionSuffix : UITreeNodeWithDisplayRegion -> String
 selectionSuffix node =
-    let
-        selectedFlag key =
-            node.uiNode.dictEntriesOfInterest
-                |> Dict.get key
-                |> Maybe.andThen (Json.Decode.decodeValue decodeBoolOrInt >> Result.toMaybe)
-
-        isSelected =
-            case ( selectedFlag "_selected", selectedFlag "isSelected" ) of
-                ( Just selected, _ ) ->
-                    selected
-
-                ( Nothing, Just selected ) ->
-                    selected
-
-                ( Nothing, Nothing ) ->
-                    EveOnline.ParseUserInterface.subtreeShowsSelectionIndicator node
-    in
-    if isSelected then
+    if Common.controlIsSelected node then
         " (selected)"
 
     else
         ""
-
-
-{-| The client writes a flag either as a python bool or as 0/1, depending on the widget.
--}
-decodeBoolOrInt : Json.Decode.Decoder Bool
-decodeBoolOrInt =
-    Json.Decode.oneOf
-        [ Json.Decode.bool
-        , Json.Decode.int |> Json.Decode.map (\asInt -> asInt /= 0)
-        ]
 
 
 {-| The trained level a skill row shows through its five pips, as words.
