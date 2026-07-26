@@ -94,8 +94,9 @@ Measured against a live client on 2026-07-21; two constraints found empirically:
 2. A button-down posted immediately after a move is discarded, because the client hit-tests the click
    against the pointer position it held on its previous frame. 0 ms fails; >= 60 ms works.
 
-Note also that the client derives the typed character from WM_KEYDOWN by itself, so we must not also
-post WM_CHAR - doing so enters every character twice.
+3. The client derives the typed character from WM_KEYDOWN by itself, so a key-down and a WM_CHAR for
+   the same character enter it twice. The two are therefore alternatives, not a pair: `KeyDown`/`KeyUp`
+   for keys that act (Backspace, Return, the arrows), `TypeCharacter` for text.
 */
 public static class InputViaWindowMessages
 {
@@ -107,6 +108,7 @@ public static class InputViaWindowMessages
     const uint WM_MOUSEWHEEL = 0x020A;
     const uint WM_KEYDOWN = 0x0100;
     const uint WM_KEYUP = 0x0101;
+    const uint WM_CHAR = 0x0102;
 
     const int WHEEL_DELTA = 120;
 
@@ -281,6 +283,24 @@ public static class InputViaWindowMessages
     {
         WinApi.PostMessage(
             windowHandle, WM_KEYUP, new IntPtr(virtualKeyCode), LParamForKey(virtualKeyCode, true));
+    }
+
+    /// <summary>
+    /// Enter one character of text, whatever key would produce it.
+    /// </summary>
+    /// <remarks>
+    /// Typing by posting key-downs can only reach what an unmodified key produces: a posted modifier
+    /// does not register as held (a posted Ctrl+A typed a literal "a", measured 2026-07-23), so
+    /// uppercase and every shifted symbol were unreachable, and text arrived lowercase and unpunctuated.
+    /// That is tolerable in a search box and not in a corporation application someone has to read.
+    ///
+    /// WM_CHAR carries the character itself rather than a key, so it needs no modifier state. Measured
+    /// on a live client 2026-07-26: posted alone into the application text area, "XY, it's!" arrived
+    /// exactly, capitals, comma, apostrophe and all. Alone is the operative word - see note 3 above.
+    /// </remarks>
+    static public void TypeCharacter(IntPtr windowHandle, int characterCode)
+    {
+        WinApi.PostMessage(windowHandle, WM_CHAR, new IntPtr(characterCode), new IntPtr(1));
     }
 
     static void WaitForClientToPickUpMouseMove()

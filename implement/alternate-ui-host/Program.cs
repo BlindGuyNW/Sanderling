@@ -251,6 +251,15 @@ public static class EnvelopeAdapter
                 KeyUp = new Request.KeyboardKey { virtualKeyCode = VirtualKeyCodeFromJson(keyUp) },
             };
 
+        if (effect.ContainsKey("TypeCharacter"))
+            return new Request.EffectOnWindowStructure
+            {
+                TypeCharacter = new Request.TypeCharacterStructure
+                {
+                    characterCode = CharacterCodeFromJson(effect["TypeCharacter"]),
+                },
+            };
+
         throw new Exception("Unknown effect: " + effect.ToString());
     }
 
@@ -262,6 +271,14 @@ public static class EnvelopeAdapter
     generated encoding is {"VirtualKeyCodeFromInt":[code]}. The hand-written inner codec instead
     writes {"virtualKeyCode":code}; accept both so this keeps working after the envelope collapse.
     */
+    /*
+    The generated encoding array-wraps a tag argument, so a character carrying no record of its own
+    arrives as {"TypeCharacter":[code]}; the hand-written inner codec would write the bare
+    {"TypeCharacter":code}. Accept both, as for the virtual key codes below.
+    */
+    static int CharacterCodeFromJson(JToken typeCharacter) =>
+        (int)UnwrapTag(typeCharacter);
+
     static int VirtualKeyCodeFromJson(JObject key)
     {
         if (key.ContainsKey("VirtualKeyCodeFromInt"))

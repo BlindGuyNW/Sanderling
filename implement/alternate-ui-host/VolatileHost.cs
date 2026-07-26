@@ -64,6 +64,13 @@ public class Request
         public KeyboardKey KeyDown;
 
         public KeyboardKey KeyUp;
+
+        public TypeCharacterStructure TypeCharacter;
+    }
+
+    public class TypeCharacterStructure
+    {
+        public int characterCode;
     }
 
     public class VerticalScrollAtStructure
@@ -422,6 +429,12 @@ public static class VolatileHost
                 InputViaWindowMessages.MouseButtonUp(windowHandle, virtualKeyCode);
             else
                 InputViaWindowMessages.KeyUp(windowHandle, virtualKeyCode);
+        }
+
+        if (effectOnWindow?.TypeCharacter != null)
+        {
+            InputViaWindowMessages.TypeCharacter(
+                windowHandle, effectOnWindow.TypeCharacter.characterCode);
         }
     }
 

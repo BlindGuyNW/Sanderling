@@ -9,6 +9,21 @@ type EffectOnWindowStructure
     | VerticalScrollAt VerticalScrollAtStructure
     | KeyDown VirtualKeyCode
     | KeyUp VirtualKeyCode
+      {- Enter one character of text, whatever key would produce it.
+
+         Text used to go as key-downs, mapping each character to the key that types it. That can
+         only ever reach what an *unmodified* key types: posting a modifier key-down does not
+         register as a held modifier (measured against a live client 2026-07-23 -- a posted
+         Ctrl+A typed a literal "a"), so every capital and every shifted symbol was unreachable
+         and text arrived lowercase and unpunctuated. It also had to assert a US layout for the
+         punctuation keys, since the client resolves a key through the active layout.
+
+         A character message carries the character itself, so neither limit applies: posted into
+         the corporation application's text area on a live client 2026-07-26, "XY, it's!" arrived
+         exactly. Use this for text, and the key effects for the keys that act -- Backspace,
+         Return, the arrows -- never both for the same character, which enters it twice.
+      -}
+    | TypeCharacter Char
 
 
 {-| A rotation of the mouse wheel over the given location, in wheel ticks. Windows wheel
@@ -63,74 +78,6 @@ effectsForDragAndDrop { startLocation, mouseButton, endLocation } =
     , MouseMoveTo endLocation
     , KeyUp (virtualKeyCodeFromMouseButton mouseButton)
     ]
-
-
-{-| The key that types the given character, or `Nothing` when no single unmodified key does.
-
-The game client derives the character from the key-down message and the active keyboard layout,
-so this mapping asserts a US layout for the punctuation keys (`VK_OEM_*`), and it never reaches
-for Shift: posting a modifier key-down does not register as a held modifier (measured against a
-live client 2026-07-23 -- a posted Ctrl+A typed a literal "a"), so uppercase and shifted symbols
-are not reachable this way at all. Letters therefore arrive lowercase, which the client's search
-fields do not care about.
-
--}
-virtualKeyCodeForCharacter : Char -> Maybe VirtualKeyCode
-virtualKeyCodeForCharacter character =
-    let
-        lowercase =
-            Char.toLower character
-
-        code =
-            Char.toCode lowercase
-    in
-    if Char.isAlpha lowercase && code <= Char.toCode 'z' then
-        --  'a'..'z' map to VK_A..VK_Z; the guard keeps non-ASCII letters out.
-        Just (VirtualKeyCodeFromInt (0x41 + code - Char.toCode 'a'))
-
-    else if Char.isDigit lowercase then
-        Just (VirtualKeyCodeFromInt (0x30 + code - Char.toCode '0'))
-
-    else
-        case lowercase of
-            ' ' ->
-                Just vkey_SPACE
-
-            '-' ->
-                Just (VirtualKeyCodeFromInt 0xBD)
-
-            '.' ->
-                Just (VirtualKeyCodeFromInt 0xBE)
-
-            ',' ->
-                Just (VirtualKeyCodeFromInt 0xBC)
-
-            '\'' ->
-                Just (VirtualKeyCodeFromInt 0xDE)
-
-            ';' ->
-                Just (VirtualKeyCodeFromInt 0xBA)
-
-            '/' ->
-                Just (VirtualKeyCodeFromInt 0xBF)
-
-            '`' ->
-                Just (VirtualKeyCodeFromInt 0xC0)
-
-            '[' ->
-                Just (VirtualKeyCodeFromInt 0xDB)
-
-            '\\' ->
-                Just (VirtualKeyCodeFromInt 0xDC)
-
-            ']' ->
-                Just (VirtualKeyCodeFromInt 0xDD)
-
-            '=' ->
-                Just (VirtualKeyCodeFromInt 0xBB)
-
-            _ ->
-                Nothing
 
 
 virtualKeyCodeFromMouseButton : MouseButton -> VirtualKeyCode

@@ -393,6 +393,21 @@ public class EveOnline64
              * */
             "paragraphs",
 
+            /*
+             * 2026-07-26 What separates an editable text area from a read-only one. Both are
+             * "EditPlainText", so the paragraphs above cannot tell them apart, and the alternate
+             * UI read the corporation application's "Application Text" box -- a free text area
+             * the player has to fill in -- as prose, exactly as it reads an item description.
+             * "readonly" is the client's own flag, and the only property on the node that tells
+             * the two apart. Six nodes in a whole reading carry it.
+             *
+             * The field's current content is "paragraphs" above, not the "currChars" the widget
+             * also carries: typing "test probe" into the live application box left "currChars"
+             * empty and put the text in "paragraphs". "currChars" belongs to "Scroll", which
+             * "EditPlainText" derives from, and buffers type-ahead search in a scrolling list.
+             * */
+            "readonly",
+
             // 2023-01-03 Sample with PhotonUI: process-sample-ebdfff96e7.zip
             "_texturePath",
             "_opacity",

@@ -572,15 +572,20 @@ update event stateBefore =
                                         }
                                         |> sequenceElements 100
 
-                                {- Replacing a field's content is a click to focus it, then keys:
-                                   End brings the caret to the end, Backspaces clear what the
-                                   field holds, one key-down per character types the text, and
-                                   Return commits it. Posted modifier keys do not register as
-                                   held -- a posted Ctrl+A typed a literal "a", measured against
-                                   a live client 2026-07-23 -- so there is no select-all, and
-                                   clearing is one Backspace per character of the field's current
-                                   content. The messages are processed in queue order, so the
-                                   caret is always placed before the first key arrives.
+                                {- Replacing a field's content is a click to focus it, then the
+                                   caret to the end of what is there, one Backspace per character
+                                   to clear it, and the new text. Posted modifier keys do not
+                                   register as held -- a posted Ctrl+A typed a literal "a",
+                                   measured against a live client 2026-07-23 -- so there is no
+                                   select-all, and clearing has to be counted out. The messages
+                                   are processed in queue order, so the caret is always placed
+                                   before the first character arrives.
+
+                                   The text itself goes as `TypeCharacter`, not as key-downs:
+                                   the same absent modifiers that rule out select-all also put
+                                   every capital and every shifted symbol out of reach of a key,
+                                   which is survivable in a search box and not in a corporation
+                                   application.
                                 -}
                                 TypeTextIntoField typedText ->
                                     let
@@ -589,21 +594,61 @@ update event stateBefore =
                                             , Common.EffectOnWindow.KeyUp key
                                             ]
 
-                                        keysToPress =
-                                            Common.EffectOnWindow.vkey_END
-                                                :: List.repeat
+                                        {- A free-text area differs from a one-line field in
+                                           three ways, all of them because it has lines. End
+                                           reaches the end of the caret's line and no further,
+                                           so the caret is walked to the last line first --
+                                           Down past the last line does nothing, which makes
+                                           overshooting safe where undershooting would leave
+                                           the earlier lines behind. Return is a line break
+                                           rather than a commit, so the text carries its own
+                                           breaks and none is appended at the end. And the
+                                           content is the widget's paragraphs rather than a
+                                           `textLabel` child, which a text area does not have.
+                                        -}
+                                        isTextArea =
+                                            EveOnline.ParseUserInterface.isEditableTextArea
+                                                sendInput.uiNode.uiNode
+
+                                        caretToEnd =
+                                            (if isTextArea then
+                                                List.repeat
+                                                    (linesInTextArea sendInput.uiNode)
+                                                    Common.EffectOnWindow.vkey_DOWN
+
+                                             else
+                                                []
+                                            )
+                                                ++ [ Common.EffectOnWindow.vkey_END ]
+                                                ++ List.repeat
                                                     (charactersToClearFromTextField sendInput.uiNode)
                                                     Common.EffectOnWindow.vkey_BACK
-                                                ++ (typedText
-                                                        |> String.toList
-                                                        |> List.filterMap Common.EffectOnWindow.virtualKeyCodeForCharacter
-                                                   )
-                                                ++ [ Common.EffectOnWindow.vkey_RETURN ]
+
+                                        typeEffects =
+                                            typedText
+                                                |> String.toList
+                                                |> List.concatMap
+                                                    (\character ->
+                                                        if character == '\n' then
+                                                            keystroke Common.EffectOnWindow.vkey_RETURN
+
+                                                        else
+                                                            [ Common.EffectOnWindow.TypeCharacter character ]
+                                                    )
+
+                                        commitEffects =
+                                            if isTextArea then
+                                                []
+
+                                            else
+                                                keystroke Common.EffectOnWindow.vkey_RETURN
                                     in
                                     (Common.EffectOnWindow.effectsMouseClickAtLocation
                                         Common.EffectOnWindow.MouseButtonLeft
                                         clickLocation
-                                        ++ (keysToPress |> List.concatMap keystroke)
+                                        ++ (caretToEnd |> List.concatMap keystroke)
+                                        ++ typeEffects
+                                        ++ commitEffects
                                     )
                                         |> sequenceElements effectSequenceSpacingMilliseconds
 
@@ -681,15 +726,46 @@ pixelsPerWheelTick =
     50
 
 
-{-| How many Backspaces clear a text field: the length of the text its `textLabel` child shows.
-The field also holds a `hintTextLabel` -- the placeholder, drawn only while the field is empty --
-whose text is not content and does not count. Content the reading could not recover means an
-unknown length, so a generous fixed count: Backspace in an already-empty field does nothing, so
-overshooting is safe where undershooting leaves old text in front of the new. The few extra on a
-readable length cover characters typed since the reading was taken.
+{-| How many Down-arrows put the caret on the last line of a free-text area.
+
+The client leaves one node per drawn line under the widget, so counting them is counting the
+lines -- as they wrapped on screen, which is what the caret moves through. Two spare, because
+Down on the last line does nothing while one short of the last line leaves text behind, and
+because the player may have typed since the reading was taken.
+
+-}
+linesInTextArea : EveOnline.ParseUserInterface.UITreeNodeWithDisplayRegion -> Int
+linesInTextArea fieldNode =
+    (fieldNode
+        |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+        |> List.filter (.uiNode >> .pythonObjectTypeName >> String.contains "EditTextline")
+        |> List.length
+    )
+        + 2
+
+
+{-| How many Backspaces clear a text field: the length of the text its `textLabel` child shows,
+or -- for a free-text area, which has no such child -- the length of the paragraphs the widget
+renders. The one-line field also holds a `hintTextLabel`, the placeholder drawn only while the
+field is empty, whose text is not content and does not count. Content the reading could not
+recover means an unknown length, so a generous fixed count: Backspace in an already-empty field
+does nothing, so overshooting is safe where undershooting leaves old text in front of the new.
+The few extra on a readable length cover characters typed since the reading was taken.
 -}
 charactersToClearFromTextField : EveOnline.ParseUserInterface.UITreeNodeWithDisplayRegion -> Int
 charactersToClearFromTextField fieldNode =
+    if EveOnline.ParseUserInterface.isEditableTextArea fieldNode.uiNode then
+        fieldNode.uiNode
+            |> EveOnline.ParseUserInterface.getParagraphsText
+            |> Maybe.map (String.length >> (+) 4)
+            |> Maybe.withDefault 0
+
+    else
+        charactersToClearFromOneLineField fieldNode
+
+
+charactersToClearFromOneLineField : EveOnline.ParseUserInterface.UITreeNodeWithDisplayRegion -> Int
+charactersToClearFromOneLineField fieldNode =
     case
         fieldNode
             |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
@@ -890,6 +966,9 @@ effectOnWindowAsVolatileHostEffectOnWindow effectOnWindow =
 
         Common.EffectOnWindow.KeyUp key ->
             EveOnline.VolatileProcessInterface.KeyUp key
+
+        Common.EffectOnWindow.TypeCharacter character ->
+            EveOnline.VolatileProcessInterface.TypeCharacter (Char.toCode character)
 
 
 integrateBackendResponse : { request : InterfaceToFrontendClient.RequestFromClient, result : Result HttpRequestErrorStructure ResponseFromServer } -> State -> State

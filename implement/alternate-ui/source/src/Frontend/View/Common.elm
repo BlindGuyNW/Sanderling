@@ -20,6 +20,7 @@ module Frontend.View.Common exposing
     , prose
     , section
     , sliderControl
+    , textAreaControl
     , textFieldControl
     , textLines
     , toggleControl
@@ -42,6 +43,7 @@ import Html
 import Html.Attributes as HA
 import Html.Events as HE
 import Json.Decode
+import Json.Encode
 import Regex
 
 
@@ -103,10 +105,10 @@ announces `toggle button, pressed` -- or, without an input route, as a word afte
 `sliderPercent` makes the entry a slider: it renders as a `role="slider"` element the arrow keys
 adjust, instead of a button.
 
-`fieldText` makes the entry a text field: it renders as an edit box, and pressing Enter in it
-sends what was typed into the corresponding field of the game client. The value carried is what
-the game client's field holds right now, or `Nothing` when it is empty -- announced with the
-label, since the edit box on the page starts empty rather than mirroring the client.
+`fieldText` makes the entry a text field: it renders as an edit box holding what the game
+client's field holds right now, and sending replaces the client's content with what was typed.
+`multiLine` says which of the client's two text widgets this is, which decides both how it
+renders and how it is sent -- see `textFieldElement` and `textAreaElement`.
 
 -}
 type alias Entry =
@@ -114,7 +116,16 @@ type alias Entry =
     , target : Maybe ControlTarget
     , checkState : Maybe Bool
     , sliderPercent : Maybe Int
-    , fieldText : Maybe (Maybe String)
+    , fieldText : Maybe FieldContent
+    }
+
+
+{-| What a text widget of the game client holds, and whether it is the one-line or the free-text
+kind. `current` is `Nothing` for an empty field.
+-}
+type alias FieldContent =
+    { current : Maybe String
+    , multiLine : Bool
     }
 
 
@@ -156,11 +167,21 @@ sliderControl label percent trackNode =
     { label = label, target = Just { node = trackNode, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Just percent, fieldText = Nothing }
 
 
-{-| A text field of the game client, with what it currently holds, or `Nothing` when empty.
+{-| A one-line text field of the game client, with what it currently holds, or `Nothing` when
+empty. Pressing Enter in it sends.
 -}
 textFieldControl : String -> Maybe String -> UITreeNodeWithDisplayRegion -> Entry
 textFieldControl label currentText node =
-    { label = label, target = Just { node = node, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Just currentText }
+    { label = label, target = Just { node = node, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Just { current = currentText, multiLine = False } }
+
+
+{-| A free-text area of the game client -- the corporation application's `Application Text`, a
+note, a description someone is meant to write. Enter in one of these is a line break, so it
+renders with a send button of its own rather than committing on Enter.
+-}
+textAreaControl : String -> Maybe String -> UITreeNodeWithDisplayRegion -> Entry
+textAreaControl label currentText node =
+    { label = label, target = Just { node = node, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Just { current = currentText, multiLine = True } }
 
 
 {-| An entry that scrolls a list of the game client by the given number of pages, positive down.
@@ -453,8 +474,12 @@ entryHtml context entry =
                     ( Just percent, _ ) ->
                         sliderElement context.inputRoute entry.label percent target.node
 
-                    ( Nothing, Just currentText ) ->
-                        textFieldElement context.inputRoute entry.label currentText target.node
+                    ( Nothing, Just field ) ->
+                        if field.multiLine then
+                            textAreaElement context.inputRoute entry.label field.current target.node
+
+                        else
+                            textFieldElement context.inputRoute entry.label field.current target.node
 
                     ( Nothing, Nothing ) ->
                         controlElementForInput context.inputRoute entry.label target.node target.canMenu entry.checkState target.activate
@@ -613,6 +638,90 @@ textFieldElement maybeInputRoute label currentText node =
                     (Json.Decode.oneOf [ tooltipGestureDecoder inputRoute node, enterKeyDecoder ])
                 ]
                 []
+
+
+{-| A free-text area of the game client, as the multi-line edit box a screen reader expects:
+what the game's widget holds is in the box, reviewable line by line with the arrow keys, and
+sending replaces the widget's content with what is in the box.
+
+Not the one-line field's model, for two reasons.
+
+Enter cannot be the send key. In a free-text area Enter is a line break, and the player writing
+a corporation application needs paragraphs. So the send verb gets an element of its own -- an
+ordinary button, which browse mode lists and announces -- and Ctrl+Enter does the same for
+anyone already typing in the box. Both are named in the label, because a gesture a blind player
+cannot discover is a gesture that does not exist.
+
+The button reads the box through `previousElementSibling`, which is sound only because both
+elements are emitted here, adjacent, in this order. Keeping the typed text in the model instead
+would mean threading an update through every view that renders an entry, for a value the DOM
+already holds.
+
+The content rides in as `defaultValue`, the property behind the `value` *attribute*: it fills
+the box on first render and follows later readings until the player types, which marks the box
+dirty and ends its influence. Mirroring the value property instead would re-set the box on every
+reading -- once a second -- and wipe whatever was being written.
+
+-}
+textAreaElement : Maybe (InputRoute event) -> String -> Maybe String -> UITreeNodeWithDisplayRegion -> Html.Html event
+textAreaElement maybeInputRoute label currentText node =
+    let
+        content =
+            currentText |> Maybe.withDefault ""
+    in
+    case maybeInputRoute of
+        Nothing ->
+            Html.text
+                (label
+                    ++ (case currentText of
+                            Nothing ->
+                                ", empty"
+
+                            Just written ->
+                                ", currently: " ++ written
+                       )
+                    ++ " (text area)"
+                )
+
+        Just inputRoute ->
+            let
+                sendEvent typedText =
+                    inputRoute node (TypeTextIntoField typedText)
+
+                controlEnterDecoder =
+                    Json.Decode.map2 Tuple.pair
+                        (Json.Decode.field "key" Json.Decode.string)
+                        (Json.Decode.field "ctrlKey" Json.Decode.bool)
+                        |> Json.Decode.andThen
+                            (\( key, ctrlKey ) ->
+                                if key == "Enter" && ctrlKey then
+                                    Json.Decode.at [ "target", "value" ] Json.Decode.string
+
+                                else
+                                    Json.Decode.fail "not the send gesture"
+                            )
+                        |> Json.Decode.map (\typedText -> ( sendEvent typedText, True ))
+
+                sendButtonDecoder =
+                    Json.Decode.at
+                        [ "target", "previousElementSibling", "value" ]
+                        Json.Decode.string
+                        |> Json.Decode.map sendEvent
+            in
+            Html.span []
+                [ Html.textarea
+                    [ HA.attribute "aria-label"
+                        (label ++ " (text area, press Ctrl+Enter to send it to the game)")
+                    , HA.rows 6
+                    , HA.property "defaultValue" (Json.Encode.string content)
+                    , HE.preventDefaultOn "keydown"
+                        (Json.Decode.oneOf [ tooltipGestureDecoder inputRoute node, controlEnterDecoder ])
+                    ]
+                    []
+                , Html.button
+                    [ HE.on "click" sendButtonDecoder ]
+                    [ Html.text ("Send to game: " ++ label) ]
+                ]
 
 
 {-| The label to present for a control, preferring what the game client itself says over anything

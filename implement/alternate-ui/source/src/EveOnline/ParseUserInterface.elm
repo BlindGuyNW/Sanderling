@@ -4505,6 +4505,54 @@ getParagraphsText uiNode =
             )
 
 
+{-| Whether a text widget refuses to be edited, or `Nothing` on a node that is not one.
+
+The client builds an item description and the corporation application's `Application Text` box
+from the same `EditPlainText` class, and `getParagraphsText` reads both the same way, so nothing
+in the text tells a thing to read from a thing to fill in. `readonly` is the client's own flag
+for that.
+
+-}
+getIsReadOnlyFromDictEntries : EveOnline.MemoryReading.UITreeNode -> Maybe Bool
+getIsReadOnlyFromDictEntries uiNode =
+    uiNode.dictEntriesOfInterest
+        |> Dict.get "readonly"
+        |> Maybe.andThen (Json.Decode.decodeValue Json.Decode.bool >> Result.toMaybe)
+
+
+{-| A free-text area the player is meant to write in, as opposed to a one-line field or a block
+of text to read.
+
+`readonly` alone does not say this, which is worth stating because it looks as if it should: the
+client puts the flag on its one-line fields too, all of them `False` -- the market's `searchEdit`,
+a `QuickFilterEdit`, the corporation window's tax-rate fields. Reading the flag by itself
+therefore classified every search box as a text area, which would have sent the caret walking
+through lines it does not have and, worse, dropped the Return that commits a one-line field.
+
+What is particular to the multi-line widget is `_sr.paragraphs`, the renderer's paragraph list:
+present on `EditPlainText` and on nothing else in a whole reading, and present even when the box
+is empty, which is exactly when there is no text to tell them apart by. Its presence is the test,
+not its contents -- an empty box carries the key with an empty value.
+
+Deliberately node-local rather than a lookup in the type hierarchy, so it also holds for a
+reading loaded from a file, which carries no hierarchy at all.
+
+-}
+isEditableTextArea : EveOnline.MemoryReading.UITreeNode -> Bool
+isEditableTextArea uiNode =
+    (getIsReadOnlyFromDictEntries uiNode == Just False)
+        && (uiNode.dictEntriesOfInterest
+                |> Dict.get "_sr"
+                |> Maybe.andThen
+                    (Json.Decode.decodeValue
+                        (Json.Decode.at [ "entriesOfInterest" ] (Json.Decode.keyValuePairs Json.Decode.value))
+                        >> Result.toMaybe
+                    )
+                |> Maybe.withDefault []
+                |> List.any (Tuple.first >> (==) "paragraphs")
+           )
+
+
 getDisplayTextFromDictEntry : Json.Encode.Value -> Maybe String
 getDisplayTextFromDictEntry dictEntryValue =
     case

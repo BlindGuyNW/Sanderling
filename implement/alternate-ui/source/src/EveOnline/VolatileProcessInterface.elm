@@ -105,6 +105,7 @@ type
     | VerticalScrollAt VerticalScrollAtStructure
     | KeyDown VirtualKeyCode
     | KeyUp VirtualKeyCode
+    | TypeCharacter Int
 
 
 type alias MouseMoveToStructure =
@@ -241,6 +242,11 @@ encodeEffectOnWindowStructure effectOnWindow =
                 [ ( "KeyUp", virtualKeyCode |> encodeKey )
                 ]
 
+        TypeCharacter characterCode ->
+            Json.Encode.object
+                [ ( "TypeCharacter", characterCode |> Json.Encode.int )
+                ]
+
 
 decodeEffectOnWindowStructure : Json.Decode.Decoder EffectOnWindowStructure
 decodeEffectOnWindowStructure =
@@ -249,6 +255,7 @@ decodeEffectOnWindowStructure =
         , Json.Decode.field "VerticalScrollAt" (decodeVerticalScrollAt |> Json.Decode.map VerticalScrollAt)
         , Json.Decode.field "KeyDown" (decodeKey |> Json.Decode.map KeyDown)
         , Json.Decode.field "KeyUp" (decodeKey |> Json.Decode.map KeyUp)
+        , Json.Decode.field "TypeCharacter" (Json.Decode.int |> Json.Decode.map TypeCharacter)
         ]
 
 

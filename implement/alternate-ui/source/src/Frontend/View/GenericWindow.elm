@@ -576,14 +576,20 @@ walk typeHierarchy insideCandidate node =
                                 { items = items, hasCandidate = True }
 
                             Nothing ->
-                                --  Before the container walk, which would descend into the line
-                                --  objects the renderer left behind and offer each as a control.
-                                case paragraphProse node of
-                                    Just prose ->
-                                        { items = [ Prose prose ], hasCandidate = False }
+                                --  Both of these come before the container walk, which would
+                                --  descend into the line objects the renderer left behind and
+                                --  offer each of them as a control.
+                                case textAreaEntry node of
+                                    Just entry ->
+                                        { items = [ Control entry ], hasCandidate = True }
 
                                     Nothing ->
-                                        walkContainer typeHierarchy insideCandidate node
+                                        case paragraphProse node of
+                                            Just prose ->
+                                                { items = [ Prose prose ], hasCandidate = False }
+
+                                            Nothing ->
+                                                walkContainer typeHierarchy insideCandidate node
 
 
 {-| The text of a multi-line text widget -- an item description, a note, a mail body.
@@ -601,6 +607,53 @@ paragraphProse node =
         |> EveOnline.ParseUserInterface.getParagraphsText
         |> Maybe.andThen EveOnline.ParseUserInterface.discardUnreadableText
         |> Maybe.map (\text -> { text = text, position = positionOfNode node })
+
+
+{-| The same multi-line widget when the player is meant to write in it rather than read it: the
+corporation application's `Application Text`, and whatever else the client builds this way.
+
+The client makes an item description and a free-text box from one class, `EditPlainText`, and
+`getParagraphsText` reads the content of both, so before this the application box arrived here as
+prose -- a blind player looking at a form they could not fill in. `isEditableTextArea` is what
+separates them, on the client's own `readonly` flag plus the paragraph list that only the
+multi-line widget carries; see there for why the flag alone is not enough. Measured on a live
+corporation application, 2026-07-26.
+
+Read before `paragraphProse` deliberately: an editable box that already holds text has to render
+as an edit area *containing* that text, not as prose repeating it.
+
+The label is the client's tooltip or internal name, and neither exists on the application box --
+the client labels it with a separate `Application Text` label beside it, which the walk emits as
+prose immediately before this entry, so a reading of the page still runs "Application Text" then
+the edit area.
+
+-}
+textAreaEntry : UITreeNodeWithDisplayRegion -> Maybe Common.Entry
+textAreaEntry node =
+    if not (EveOnline.ParseUserInterface.isEditableTextArea node.uiNode) then
+        Nothing
+
+    else
+        let
+            label =
+                [ node.uiNode
+                    |> EveOnline.ParseUserInterface.getHintTextFromDictEntries
+                    |> Maybe.andThen EveOnline.ParseUserInterface.discardUnreadableText
+                , node.uiNode |> EveOnline.ParseUserInterface.getNameFromDictEntries
+                ]
+                    |> List.filterMap identity
+                    |> List.head
+                    |> Maybe.withDefault "Text"
+        in
+        Just
+            (Common.textAreaControl
+                label
+                (node.uiNode
+                    |> EveOnline.ParseUserInterface.getParagraphsText
+                    |> Maybe.andThen EveOnline.ParseUserInterface.discardUnreadableText
+                )
+                node
+            )
 
 
 walkContainer : Dict.Dict String (List String) -> Bool -> UITreeNodeWithDisplayRegion -> WalkResult
