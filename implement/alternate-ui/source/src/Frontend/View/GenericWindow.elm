@@ -562,6 +562,9 @@ walk typeHierarchy insideCandidate node =
     if not (Common.isVisible node) then
         { items = [], hasCandidate = False }
 
+    else if isSilentlyInert typeHierarchy node then
+        { items = [], hasCandidate = False }
+
     else if isGroupHeading node then
         { items = textOfSubtree node |> Maybe.map (Group >> List.singleton) |> Maybe.withDefault []
         , hasCandidate = True
@@ -1387,6 +1390,34 @@ isControlCandidate typeHierarchy node =
             )
                 /= Nothing
            )
+
+
+{-| A control the client has taken off screen without taking out of the tree: it stopped
+hit-testing it and said nothing else about it.
+
+The AIR career program is where this shows. It stacks three rings -- careers, activities, goals --
+at one 800x800 rect and draws whichever the player has zoomed to, and the two it is not drawing
+keep `_opacity` 1, a full display region and every label they ever had. So the whole window read as
+one ring of goals with a ring of activities scrambled through it, and clicking an activity did
+nothing visible: the click landed on the goal drawn at the same coordinates. "Market" selected
+"Complete Entrepreneur Mission 4". Reported 2026-07-27.
+
+Not `Common.isPickable` on its own, which is 0 on plain labels and sprites inside perfectly live
+controls -- a button's caption is not separately clickable -- and dropping those would empty the
+page of most of its text. The claim is only about a node that is itself a control: a control the
+client will not hit-test is a control the client is not showing.
+
+And not about a control the client greys out, which is also unpickable. That one *is* on screen and
+the player needs to hear it, disabled, which `Common.controlIsDisabled` and the `aria-disabled` it
+drives already do. The two are told apart by whether the client states the disabled flag: it says
+so when it means greyed out, and says nothing when the control is simply gone.
+
+-}
+isSilentlyInert : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> Bool
+isSilentlyInert typeHierarchy node =
+    isControlCandidate typeHierarchy node
+        && not (Common.isPickable node)
+        && not (Common.controlIsDisabled node)
 
 
 {-| The client base classes that mark a family of controls, matched anywhere in a type's ancestry.

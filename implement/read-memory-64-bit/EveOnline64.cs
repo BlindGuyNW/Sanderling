@@ -474,7 +474,32 @@ public class EveOnline64
              * at the top in both). The uniform 1 on unsorted columns is a default and means
              * nothing; only the header whose "_selected" is true is sorted at all.
              * */
-            "_direction");
+            "_direction",
+
+            /*
+             * 2026-07-27 Whether the client hit-tests a node at all. Carbon's three values,
+             * as measured across a whole reading: 0 takes no mouse input and neither does
+             * anything under it, 1 takes it, 2 passes it to the children (every plain
+             * container reads 2).
+             *
+             * This is the only evidence for a control the client has taken off screen without
+             * taking out of the tree. The AIR career program stacks its three rings -- careers,
+             * activities, goals -- at the same 800x800 rect and shows one, and the two it hides
+             * keep `_opacity` 1 and a full display region, so every visibility test we had said
+             * they were on screen. The alternate UI offered all of them, and a click on one of
+             * the hidden ones landed on whichever visible node shared its coordinates: clicking
+             * the "Market" activity selected "Complete Entrepreneur Mission 4" instead, which
+             * reads as a control that does nothing. Reported 2026-07-27; the nine hidden
+             * `ActivityNode`s read `_pickState` 0 and the ten shown `GoalNode`s read 1.
+             *
+             * It does not replace the `enabled` / `isDisabled` / `_enabled` /
+             * `_interaction_state` keys above. A control the client greys out is also 0 -- the
+             * eight `ResizeHandle`s of a maximized window carry `_enabled` False and 0 together
+             * -- so 0 alone cannot tell "greyed out, still on screen, say so" from "not on
+             * screen at all". Those keys answer the first, this one the second; see
+             * `isSilentlyInert` in Frontend/View/GenericWindow.elm.
+             * */
+            "_pickState");
 
     struct LocalMemoryReadingTools
     {

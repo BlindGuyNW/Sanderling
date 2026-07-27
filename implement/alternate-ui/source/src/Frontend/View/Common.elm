@@ -5,10 +5,12 @@ module Frontend.View.Common exposing
     , control
     , controlActivateOnly
     , controlElement
+    , controlIsDisabled
     , controlIsSelected
     , decodeBoolOrInt
     , heading
     , inReadingOrder
+    , isPickable
     , isVisible
     , nodesInReadingOrder
     , labelForControl
@@ -948,6 +950,29 @@ isVisible node =
                 |> Maybe.map (\opacity -> 0.05 < opacity)
                 |> Maybe.withDefault True
            )
+
+
+{-| Whether the client hit-tests this node at all. `_pickState` is 0 for a node that takes no
+mouse input, and whose subtree takes none either; 1 for one that does; 2 for a container that
+passes clicks through to its children, which is what nearly every plain container reads.
+
+This answers a question `isVisible` above cannot. The client can take a control off screen while
+leaving it in the tree at full opacity and full size -- see the AIR career program's stacked rings
+in `DictEntriesOfInterestKeys` -- and against such a node every test we have says it is there. The
+one thing that changes is that the client stops hit-testing it.
+
+A node carrying no `_pickState` is reported pickable. That is the safe direction, the same one
+`controlIsDisabled` takes: hiding a control on the strength of a key the client never stated costs
+the player the only way to act on it.
+
+-}
+isPickable : UITreeNodeWithDisplayRegion -> Bool
+isPickable node =
+    node.uiNode.dictEntriesOfInterest
+        |> Dict.get "_pickState"
+        |> Maybe.andThen (Json.Decode.decodeValue Json.Decode.int >> Result.toMaybe)
+        |> Maybe.map (\pickState -> pickState /= 0)
+        |> Maybe.withDefault True
 
 
 {-| A node that clips and scrolls its content, told by the client classes in its inheritance
