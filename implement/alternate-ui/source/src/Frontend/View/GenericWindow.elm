@@ -221,6 +221,21 @@ handWrittenNames name =
         "SkillPlanEntry_AIR" ->
             Just "AIR skill plan"
 
+        {- The arrow that expands or collapses a tree row, in the inventory's container tree and
+           every other `TreeViewEntry`. The client builds it as a bare `Container` inside the
+           row's `spacerCont`, so no inheritance rule reaches it and it carries no text, which
+           left the page with no way to collapse anything at all: a ship's Drone Bay row could
+           not be closed because the arrow that closes it was never offered. Naming it here is
+           what makes it a control, by signal 4 of `isControlCandidate`.
+
+           This name is only the fallback. `cardItems` knows which row the arrow belongs to and
+           replaces it with `Expand` or `Collapse` and an `aria-expanded` state, both taken from
+           whether the row has a `childCont`. The name still has to be here, because it is what
+           makes the arrow a control in the first place.
+        -}
+        "toggleBtn" ->
+            Just "Expand or collapse"
+
         _ ->
             Nothing
 
@@ -768,7 +783,7 @@ walkContainerItems typeHierarchy insideCandidate node childItems descendantHasCa
         else if nodeIsCandidate then
             --  A candidate holding candidates is one of two things, told apart by whether any
             --  text is left once its inner controls have claimed theirs. See `cardItems`.
-            case cardItems node childItems of
+            case cardItems typeHierarchy node childItems of
                 Just items ->
                     { items = items, hasCandidate = True }
 
@@ -975,9 +990,27 @@ the thing the row acts on, so the row comes back as a control followed by its in
 Past the merge limit the leftover text is a page of prose rather than a card's label, and the
 node stays a container, the same cutoff `collapsedControlForNode` applies.
 
+The card is clicked on its *own* row, not at the centre of its box. A card's box encloses its
+inner controls, so on anything taller than one row the centre lands on a child instead: the
+inventory's ship row spans its own 24px header plus the 32px Drone Bay beneath it, and its centre
+fell inside the Drone Bay. Selecting the ship therefore selected its drone bay, and no click could
+reach the ship's cargo hold at all. Measured 2026-07-26 on a live client -- ship row y 376..432,
+centre y 404, Drone Bay row y 400..424 -- and the same on the station's Ship hangar row, whose
+centre landed on the first ship under it.
+
+The row of a card's own is the first child that is not itself a control and has text in it, which
+is the container the client draws the card's name in. Reaching this branch at all means some text
+went unclaimed by the inner controls, so such a child exists; `node` remains the fallback.
+
+Selection is read from that same row rather than from the whole card, for the same reason in
+reverse: `subtreeShowsSelectionIndicator` answers for an entire subtree, so an expanded parent
+finds its selected child's indicator and both announce as selected. Scoped to the header row, the
+ship row reads its own indicator -- alpha 0 -- while the Drone Bay reads alpha 99. Measured
+alongside the geometry above.
+
 -}
-cardItems : UITreeNodeWithDisplayRegion -> List ContentItem -> Maybe (List ContentItem)
-cardItems node childItems =
+cardItems : Dict.Dict String (List String) -> UITreeNodeWithDisplayRegion -> List ContentItem -> Maybe (List ContentItem)
+cardItems typeHierarchy node childItems =
     let
         unclaimedTexts =
             childItems
@@ -1007,14 +1040,83 @@ cardItems node childItems =
 
         label =
             String.join ", " unclaimedTexts
+
+        headerNode =
+            node
+                |> EveOnline.ParseUserInterface.listChildrenWithDisplayRegion
+                |> Common.nodesInReadingOrder
+                |> List.filter (isControlCandidate typeHierarchy >> not)
+                |> List.filter (textOfSubtree >> (/=) Nothing)
+                |> List.head
+                |> Maybe.withDefault node
+
+        {- A tree row is open exactly when the client gave it a `childCont`. Collapsing removes
+           the whole subtree from the reading rather than hiding it -- measured 2026-07-26 with
+           two ship rows collapsed and two expanded, the collapsed pair having no `childCont`
+           node at all -- so presence is the state, and no dict key is needed to read it. The
+           client's own `_isCollapsed` is *not* that key: it read `False` on both rows the client
+           was drawing with a collapsed arrow.
+        -}
+        isExpanded =
+            node
+                |> EveOnline.ParseUserInterface.listChildrenWithDisplayRegion
+                |> List.any
+                    (.uiNode
+                        >> EveOnline.ParseUserInterface.getNameFromDictEntries
+                        >> (==) (Just "childCont")
+                    )
+
+        {- Only this row's own arrow, never one belonging to a row nested inside it: the walk is
+           bottom-up, so an expanded parent's items already contain its children's arrows, and
+           relabelling those would state the parent's state on the child's button.
+        -}
+        headerDescendantAddresses =
+            headerNode
+                |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+                |> List.map (.uiNode >> .pythonObjectAddress)
+
+        withDisclosureState item =
+            case item of
+                Control entry ->
+                    case entry.target of
+                        Just target ->
+                            if
+                                (EveOnline.ParseUserInterface.getNameFromDictEntries target.node.uiNode
+                                    == Just "toggleBtn"
+                                )
+                                    && List.member target.node.uiNode.pythonObjectAddress headerDescendantAddresses
+                            then
+                                Control
+                                    { entry
+                                        | label =
+                                            if isExpanded then
+                                                "Collapse"
+
+                                            else
+                                                "Expand"
+                                        , expandedState = Just isExpanded
+                                    }
+
+                            else
+                                item
+
+                        Nothing ->
+                            item
+
+                _ ->
+                    item
     in
     if String.isEmpty label || maximumMergedProseLength < String.length label then
         Nothing
 
     else
         Just
-            (Control (Common.control (label ++ selectionSuffix node ++ skillLevelSuffix node) node)
-                :: innerControlsAndGroups
+            (Control
+                (Common.control
+                    (label ++ selectionSuffix headerNode ++ skillLevelSuffix node)
+                    headerNode
+                )
+                :: List.map withDisclosureState innerControlsAndGroups
             )
 
 

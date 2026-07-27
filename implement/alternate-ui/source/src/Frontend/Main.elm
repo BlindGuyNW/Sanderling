@@ -2323,6 +2323,7 @@ displayInventoryMoveActions maybeInputRouteConfig parsedUserInterface =
                     , checkState = Nothing
                     , sliderPercent = Nothing
                     , fieldText = Nothing
+                    , expandedState = Nothing
                     }
 
                 offeredItems =
@@ -2450,6 +2451,7 @@ displaySkillQueueReorderActions maybeInputRouteConfig parsedUserInterface =
             , checkState = Nothing
             , sliderPercent = Nothing
             , fieldText = Nothing
+            , expandedState = Nothing
             }
 
         dropOnRow targetRow =

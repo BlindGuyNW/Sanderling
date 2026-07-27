@@ -111,6 +111,14 @@ client's field holds right now, and sending replaces the client's content with w
 `multiLine` says which of the client's two text widgets this is, which decides both how it
 renders and how it is sent -- see `textFieldElement` and `textAreaElement`.
 
+`expandedState` is whether the thing this control expands is open, rendered as `aria-expanded`.
+Unlike `aria-selected` -- which the comment in `controlElementForInput` explains we cannot use,
+because it is honored only on roles the generic shell does not build -- `aria-expanded` is valid
+on a plain `button` and needs no role: it is the disclosure pattern, a button whose activation
+opens and closes something else. Set it only on a control that really does toggle. The tree row
+*beside* such a button is not one: clicking a row selects its container, so the state belongs on
+the arrow, not on the row.
+
 -}
 type alias Entry =
     { label : String
@@ -118,6 +126,7 @@ type alias Entry =
     , checkState : Maybe Bool
     , sliderPercent : Maybe Int
     , fieldText : Maybe FieldContent
+    , expandedState : Maybe Bool
     }
 
 
@@ -144,28 +153,28 @@ type alias ControlTarget =
 -}
 control : String -> UITreeNodeWithDisplayRegion -> Entry
 control label node =
-    { label = label, target = Just { node = node, canMenu = True, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Nothing }
+    { label = label, target = Just { node = node, canMenu = True, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Nothing, expandedState = Nothing }
 
 
 {-| A control the player can only activate, with no context menu behind it.
 -}
 controlActivateOnly : String -> UITreeNodeWithDisplayRegion -> Entry
 controlActivateOnly label node =
-    { label = label, target = Just { node = node, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Nothing }
+    { label = label, target = Just { node = node, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Nothing, expandedState = Nothing }
 
 
 {-| A control the client draws as checked or unchecked, such as a settings checkbox.
 -}
 toggleControl : String -> Bool -> UITreeNodeWithDisplayRegion -> Entry
 toggleControl label checked node =
-    { label = label, target = Just { node = node, canMenu = True, activate = MouseClickLeft }, checkState = Just checked, sliderPercent = Nothing, fieldText = Nothing }
+    { label = label, target = Just { node = node, canMenu = True, activate = MouseClickLeft }, checkState = Just checked, sliderPercent = Nothing, fieldText = Nothing, expandedState = Nothing }
 
 
 {-| A slider, with its current value as a percentage and the track node clicks are aimed at.
 -}
 sliderControl : String -> Int -> UITreeNodeWithDisplayRegion -> Entry
 sliderControl label percent trackNode =
-    { label = label, target = Just { node = trackNode, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Just percent, fieldText = Nothing }
+    { label = label, target = Just { node = trackNode, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Just percent, fieldText = Nothing, expandedState = Nothing }
 
 
 {-| A one-line text field of the game client, with what it currently holds, or `Nothing` when
@@ -173,7 +182,7 @@ empty. Pressing Enter in it sends.
 -}
 textFieldControl : String -> Maybe String -> UITreeNodeWithDisplayRegion -> Entry
 textFieldControl label currentText node =
-    { label = label, target = Just { node = node, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Just { current = currentText, multiLine = False } }
+    { label = label, target = Just { node = node, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Just { current = currentText, multiLine = False }, expandedState = Nothing }
 
 
 {-| A free-text area of the game client -- the corporation application's `Application Text`, a
@@ -182,7 +191,7 @@ renders with a send button of its own rather than committing on Enter.
 -}
 textAreaControl : String -> Maybe String -> UITreeNodeWithDisplayRegion -> Entry
 textAreaControl label currentText node =
-    { label = label, target = Just { node = node, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Just { current = currentText, multiLine = True } }
+    { label = label, target = Just { node = node, canMenu = False, activate = MouseClickLeft }, checkState = Nothing, sliderPercent = Nothing, fieldText = Just { current = currentText, multiLine = True }, expandedState = Nothing }
 
 
 {-| An entry that scrolls a list of the game client by the given number of pages, positive down.
@@ -197,6 +206,7 @@ pageControl label pages scrollNode =
     , checkState = Nothing
     , sliderPercent = Nothing
     , fieldText = Nothing
+    , expandedState = Nothing
     }
 
 
@@ -204,7 +214,7 @@ pageControl label pages scrollNode =
 -}
 prose : String -> Entry
 prose label =
-    { label = label, target = Nothing, checkState = Nothing, sliderPercent = Nothing, fieldText = Nothing }
+    { label = label, target = Nothing, checkState = Nothing, sliderPercent = Nothing, fieldText = Nothing, expandedState = Nothing }
 
 
 {-| A list of things in the game client, each with the actions we can perform on it.
@@ -286,25 +296,32 @@ controlElement maybeInputRoute label node canMenu =
 
 controlElementWithState : Maybe (InputRoute event) -> String -> UITreeNodeWithDisplayRegion -> Bool -> Maybe Bool -> Html.Html event
 controlElementWithState maybeInputRoute label node canMenu checkState =
-    controlElementForInput maybeInputRoute label node canMenu checkState MouseClickLeft
+    controlElementForInput maybeInputRoute label node canMenu checkState Nothing MouseClickLeft
 
 
-controlElementForInput : Maybe (InputRoute event) -> String -> UITreeNodeWithDisplayRegion -> Bool -> Maybe Bool -> InputOnUINode -> Html.Html event
-controlElementForInput maybeInputRoute label node canMenu checkState activateInput =
+controlElementForInput : Maybe (InputRoute event) -> String -> UITreeNodeWithDisplayRegion -> Bool -> Maybe Bool -> Maybe Bool -> InputOnUINode -> Html.Html event
+controlElementForInput maybeInputRoute label node canMenu checkState expandedState activateInput =
     case maybeInputRoute of
         Nothing ->
-            --  With no button to carry `aria-pressed`, the state becomes a word after the
-            --  label, so a reading loaded from a file still tells which options were on.
+            --  With no button to carry `aria-pressed` or `aria-expanded`, the state becomes a
+            --  word after the label, so a reading loaded from a file still tells which options
+            --  were on and which rows were open.
             Html.text
-                (case checkState of
-                    Nothing ->
-                        label
-
-                    Just True ->
+                (case ( checkState, expandedState ) of
+                    ( Just True, _ ) ->
                         label ++ " (on)"
 
-                    Just False ->
+                    ( Just False, _ ) ->
                         label ++ " (off)"
+
+                    ( Nothing, Just True ) ->
+                        label ++ " (expanded)"
+
+                    ( Nothing, Just False ) ->
+                        label ++ " (collapsed)"
+
+                    ( Nothing, Nothing ) ->
+                        label
                 )
 
         Just inputRoute ->
@@ -340,6 +357,23 @@ controlElementForInput maybeInputRoute label node canMenu checkState activateInp
                             Just checked ->
                                 [ HA.attribute "aria-pressed"
                                     (if checked then
+                                        "true"
+
+                                     else
+                                        "false"
+                                    )
+                                ]
+                       )
+                    --  `aria-expanded` needs no role of its own -- it is valid on a plain button,
+                    --  which is exactly the disclosure pattern: this button opens and closes
+                    --  something else. That is why it can be used where `aria-selected` could not.
+                    ++ (case expandedState of
+                            Nothing ->
+                                []
+
+                            Just expanded ->
+                                [ HA.attribute "aria-expanded"
+                                    (if expanded then
                                         "true"
 
                                      else
@@ -483,7 +517,7 @@ entryHtml context entry =
                             textFieldElement context.inputRoute entry.label field.current target.node
 
                     ( Nothing, Nothing ) ->
-                        controlElementForInput context.inputRoute entry.label target.node target.canMenu entry.checkState target.activate
+                        controlElementForInput context.inputRoute entry.label target.node target.canMenu entry.checkState entry.expandedState target.activate
         ]
 
 
