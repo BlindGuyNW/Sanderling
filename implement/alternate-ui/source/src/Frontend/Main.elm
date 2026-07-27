@@ -123,6 +123,29 @@ type alias State =
     , selectedViewMode : ViewMode
     , parsedUITreeView : ParsedUITreeViewState
     , tooltipInspection : TooltipInspectionState
+    , inputSequence : InputSequenceState
+    }
+
+
+{-| Effect sequences go to the game client one at a time, the next starting only when the host
+has answered for the last.
+
+They used to go the moment they were raised, which was survivable while every one of them came
+from a deliberate click. Sending a text field on focus loss ended that: the click that moves the
+focus *is* what raises the send, so a field's send and the click on the button next to it are
+raised microseconds apart. Both are one request carrying a whole sequence -- and setting a field
+is a long one, a click plus End plus a Backspace per character plus a character per character,
+spaced 30 ms -- so the two ran concurrently in the host and their messages interleaved. The
+button was pressed somewhere in the middle of the typing, acting on the amount the field held
+before. On a market order that is the wrong quantity bought.
+
+Queueing makes the order the page raised them in the order the client sees, and it holds for any
+two effects raised close together, not only this pair.
+
+-}
+type alias InputSequenceState =
+    { inFlight : Bool
+    , queued : List UserInputSendInputToUINodeStructure
     }
 
 
@@ -295,6 +318,7 @@ init _ url navigationKey =
     , selectedViewMode = ViewAlternateUI
     , parsedUITreeView = { expandedNodes = [], focused = [] }
     , tooltipInspection = NoTooltipInspection
+    , inputSequence = { inFlight = False, queued = [] }
     }
         |> update (UrlChange url)
 
@@ -323,9 +347,23 @@ update : Event -> State -> ( State, Cmd Event )
 update event stateBefore =
     case event of
         BackendResponse { request, result } ->
-            stateBefore
-                |> integrateBackendResponse { request = request, result = result }
-                |> continueTooltipInspection
+            let
+                ( state, tooltipCmd ) =
+                    stateBefore
+                        |> integrateBackendResponse { request = request, result = result }
+                        |> continueTooltipInspection
+            in
+            case request of
+                --  Answered, so the client is free for whatever was raised while it ran.
+                InterfaceToFrontendClient.RunInVolatileProcessRequest (EveOnline.VolatileProcessInterface.EffectSequenceOnWindow _) ->
+                    let
+                        ( stateAfterQueue, queueCmd ) =
+                            continueInputSequenceQueue state
+                    in
+                    ( stateAfterQueue, Cmd.batch [ tooltipCmd, queueCmd ] )
+
+                _ ->
+                    ( state, tooltipCmd )
 
         UrlChange url ->
             ( stateBefore, Cmd.none )
@@ -574,7 +612,9 @@ update event stateBefore =
 
                                 {- Replacing a field's content is a click to focus it, then the
                                    caret to the end of what is there, one Backspace per character
-                                   to clear it, and the new text. Posted modifier keys do not
+                                   to clear it, and the new text -- and a Return only when the
+                                   caller asked for one, because Return commits the dialog around
+                                   the field rather than the field. Posted modifier keys do not
                                    register as held -- a posted Ctrl+A typed a literal "a",
                                    measured against a live client 2026-07-23 -- so there is no
                                    select-all, and clearing has to be counted out. The messages
@@ -587,7 +627,7 @@ update event stateBefore =
                                    which is survivable in a search box and not in a corporation
                                    application.
                                 -}
-                                TypeTextIntoField typedText ->
+                                TypeTextIntoField typing ->
                                     let
                                         keystroke key =
                                             [ Common.EffectOnWindow.KeyDown key
@@ -625,7 +665,7 @@ update event stateBefore =
                                                     Common.EffectOnWindow.vkey_BACK
 
                                         typeEffects =
-                                            typedText
+                                            typing.text
                                                 |> String.toList
                                                 |> List.concatMap
                                                     (\character ->
@@ -637,11 +677,11 @@ update event stateBefore =
                                                     )
 
                                         commitEffects =
-                                            if isTextArea then
-                                                []
+                                            if typing.thenPressReturn && not isTextArea then
+                                                keystroke Common.EffectOnWindow.vkey_RETURN
 
                                             else
-                                                keystroke Common.EffectOnWindow.vkey_RETURN
+                                                []
                                     in
                                     (Common.EffectOnWindow.effectsMouseClickAtLocation
                                         Common.EffectOnWindow.MouseButtonLeft
@@ -691,8 +731,27 @@ update event stateBefore =
 
                                 _ ->
                                     stateBefore
+
+                        sequenceBefore =
+                            stateBefore.inputSequence
                     in
-                    ( state, requestSendInputToGameClient )
+                    if sequenceBefore.inFlight then
+                        {- Note that the queued item is the request as the player raised it, not
+                           the effects derived from it here: those are derived again when it goes
+                           out, from the reading current then. A node that moved while the queue
+                           drained is then still aimed at correctly.
+                        -}
+                        ( { stateBefore
+                            | inputSequence =
+                                { sequenceBefore | queued = sequenceBefore.queued ++ [ sendInput ] }
+                          }
+                        , Cmd.none
+                        )
+
+                    else
+                        ( { state | inputSequence = { sequenceBefore | inFlight = True } }
+                        , requestSendInputToGameClient
+                        )
 
         UserInputFocusInUITree focusedPath ->
             let
@@ -713,6 +772,27 @@ update event stateBefore =
 
         DiscardEvent ->
             ( stateBefore, Cmd.none )
+
+
+{-| Send the next queued effect sequence, if the last one left anything waiting.
+
+The queue is released on the answer whether it was a success or an error, so one failed request
+does not wedge every later one behind it.
+
+-}
+continueInputSequenceQueue : State -> ( State, Cmd Event )
+continueInputSequenceQueue stateBefore =
+    let
+        sequenceBefore =
+            stateBefore.inputSequence
+    in
+    case sequenceBefore.queued of
+        [] ->
+            ( { stateBefore | inputSequence = { sequenceBefore | inFlight = False } }, Cmd.none )
+
+        next :: rest ->
+            { stateBefore | inputSequence = { inFlight = False, queued = rest } }
+                |> update (UserInputSendInputToUINode next)
 
 
 {-| One tick of the mouse wheel moves a scroll container of the game client by this many pixels.

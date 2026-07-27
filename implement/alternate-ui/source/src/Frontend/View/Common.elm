@@ -619,8 +619,22 @@ sliderElement maybeInputRoute label percent node =
 
 
 {-| A text field of the game client, as the edit box a screen reader expects: what the game's
-field holds is in the box, readable with the arrow keys like any edit content, and typing a new
-text and pressing Enter sends it to replace the field's content in the game client.
+field holds is in the box, readable with the arrow keys like any edit content, and what is typed
+replaces the field's content in the game client when the box loses focus.
+
+Leaving the box is the send, and the send presses nothing. Return is the client's commit for
+whatever dialog surrounds a field, so appending it to every send meant that setting the market
+window's quantity field bought that quantity -- the field cannot be filled in without also
+answering the dialog. Setting a field and committing it are therefore separate gestures: Tab or
+click away to set it, Ctrl+Enter to set it and press Return, which is what sends a chat message
+or submits a search. Plain Enter sets the field too, for the hands that expect Enter in an edit
+box to do something, and still presses nothing in the game.
+
+Ctrl+Enter is named in the label, because a gesture a blind player cannot discover is a gesture
+that does not exist. It is the same gesture the free-text areas already use to send.
+
+Nothing goes out while the box holds what the client's field holds, so tabbing across fields
+nobody typed in costs no input at all.
 
 The content rides in as the `value` *attribute*, deliberately not the property: the attribute is
 only the box's default, so it fills the box on first render and follows later readings -- until
@@ -650,29 +664,60 @@ textFieldElement maybeInputRoute label currentText node =
 
         Just inputRoute ->
             let
-                enterKeyDecoder =
-                    Json.Decode.field "key" Json.Decode.string
+                gameContent =
+                    currentText |> Maybe.withDefault ""
+
+                sendEvent thenPressReturn typedText =
+                    inputRoute node
+                        (TypeTextIntoField { text = typedText, thenPressReturn = thenPressReturn })
+
+                {- What the box holds, and only when the client's field holds something else.
+                   Failing the decoder is how leaving a box nobody typed in stays silent: no
+                   event, so no click and no retyping in the game client.
+                -}
+                changedContentDecoder =
+                    Json.Decode.at [ "target", "value" ] Json.Decode.string
                         |> Json.Decode.andThen
-                            (\key ->
-                                if key == "Enter" then
-                                    Json.Decode.at [ "target", "value" ] Json.Decode.string
+                            (\typedText ->
+                                if typedText == gameContent then
+                                    Json.Decode.fail "the box holds what the field holds"
 
                                 else
-                                    Json.Decode.fail "not the Enter key"
+                                    Json.Decode.succeed typedText
                             )
-                        |> Json.Decode.map
-                            (\typedText ->
-                                ( inputRoute node (TypeTextIntoField typedText), True )
+
+                {- Ctrl+Enter sends whatever the box holds, changed or not: pressing Return in
+                   the game is the point of it, and re-submitting an unchanged search or an
+                   unchanged amount is a thing to want.
+                -}
+                sendGestureDecoder =
+                    Json.Decode.map2 Tuple.pair
+                        (Json.Decode.field "key" Json.Decode.string)
+                        (Json.Decode.field "ctrlKey" Json.Decode.bool)
+                        |> Json.Decode.andThen
+                            (\( key, ctrlKey ) ->
+                                if key /= "Enter" then
+                                    Json.Decode.fail "not a send gesture"
+
+                                else if ctrlKey then
+                                    Json.Decode.at [ "target", "value" ] Json.Decode.string
+                                        |> Json.Decode.map (sendEvent True)
+
+                                else
+                                    changedContentDecoder |> Json.Decode.map (sendEvent False)
                             )
+                        |> Json.Decode.map (\event -> ( event, True ))
             in
             keyedOnGameContent node
                 currentText
                 (Html.input
                     [ HA.type_ "text"
-                    , HA.attribute "aria-label" label
-                    , HA.attribute "value" (currentText |> Maybe.withDefault "")
+                    , HA.attribute "aria-label"
+                        (label ++ " (Ctrl+Enter presses Enter in the game)")
+                    , HA.attribute "value" gameContent
                     , HE.preventDefaultOn "keydown"
-                        (Json.Decode.oneOf [ tooltipGestureDecoder inputRoute node, enterKeyDecoder ])
+                        (Json.Decode.oneOf [ tooltipGestureDecoder inputRoute node, sendGestureDecoder ])
+                    , HE.on "blur" (changedContentDecoder |> Json.Decode.map (sendEvent False))
                     ]
                     []
                 )
@@ -759,8 +804,11 @@ textAreaElement maybeInputRoute label currentText node =
 
         Just inputRoute ->
             let
+                {- Never with a Return: in a free-text area Return is a line break, and the
+                   text carries its own.
+                -}
                 sendEvent typedText =
-                    inputRoute node (TypeTextIntoField typedText)
+                    inputRoute node (TypeTextIntoField { text = typedText, thenPressReturn = False })
 
                 controlEnterDecoder =
                     Json.Decode.map2 Tuple.pair

@@ -44,12 +44,17 @@ type InputOnUINode
          scrolling makes the client build the next rows, and the following reading picks them up.
       -}
     | VerticalScrollPage Int
-      {- Replace the content of a text field of the game client with the given text and press
-         Return: a click to focus the field, End and Backspaces to clear what it holds, one
-         key-down per character, Return to commit. Measured against a live client 2026-07-23 on
-         the market window's search field.
+      {- Replace the content of a text field of the game client with the given text: a click to
+         focus the field, End and Backspaces to clear what it holds, then the characters. With
+         `thenPressReturn`, a Return follows.
+
+         Return is not part of setting a field, and must not be: it is the client's commit for
+         whatever surrounds the field, so a Return appended to every send bought the amount as
+         soon as the market window's quantity field was set. Setting and committing are separate
+         here for that reason -- see `textFieldElement`, which sends on focus loss and presses
+         Return only when the player asks for it.
       -}
-    | TypeTextIntoField String
+    | TypeTextIntoField { text : String, thenPressReturn : Bool }
       {- Park the game client's pointer on the node without pressing anything, so the client
          shows the node's tooltip. The tooltip then turns up in a following reading as ordinary
          nodes; measured against a live client 2026-07-23 on the multibuy window's price
