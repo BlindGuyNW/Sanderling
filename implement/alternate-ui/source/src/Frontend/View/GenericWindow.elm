@@ -610,10 +610,10 @@ walk typeHierarchy insideCandidate node =
                                         { items = [ Control entry ], hasCandidate = True }
 
                                     Nothing ->
-                                        case textWidgetProse node of
-                                            Just proseItems ->
-                                                { items = proseItems |> List.map Prose
-                                                , hasCandidate = False
+                                        case textWidgetItems node of
+                                            Just items ->
+                                                { items = items
+                                                , hasCandidate = items |> List.any itemIsCandidate
                                                 }
 
                                             Nothing ->
@@ -649,14 +649,14 @@ the widget speaks it and its children are not descended into.
 The two differ only in where the client keeps it: a paragraph list, or an HTML document.
 
 -}
-textWidgetProse : UITreeNodeWithDisplayRegion -> Maybe (List ProseText)
-textWidgetProse node =
+textWidgetItems : UITreeNodeWithDisplayRegion -> Maybe (List ContentItem)
+textWidgetItems node =
     case paragraphProse node of
         Just prose ->
-            Just [ prose ]
+            Just [ Prose prose ]
 
         Nothing ->
-            htmlDocumentProse node
+            htmlDocumentItems node
 
 
 {-| The widget that keeps an HTML document: the agent conversation's briefing and mission offer.
@@ -666,13 +666,16 @@ stepped through and skipped instead of arriving as a single unskippable paragrap
 puts them back together where they are short enough to be worth hearing as one line, which is what
 becomes of the agent's name, division and standing.
 
-Not descending into the children costs the document's `showinfo` links their clickable nodes. Their
-text is in the line either way, and a window that reads is worth more than one that offers links
-and says nothing.
+The document's links follow the text as controls of their own. The children are not descended into
+-- they are the client's laid-out glyph lines and carry no text -- so the links have to be gathered
+deliberately rather than found by the container walk. They come last rather than in the position
+they occupy in the prose, because a link inside a sentence would otherwise cut the sentence in
+three; the words are in the line either way, and what the player wants from the link is somewhere
+to press.
 
 -}
-htmlDocumentProse : UITreeNodeWithDisplayRegion -> Maybe (List ProseText)
-htmlDocumentProse node =
+htmlDocumentItems : UITreeNodeWithDisplayRegion -> Maybe (List ContentItem)
+htmlDocumentItems node =
     case
         node.uiNode
             |> EveOnline.ParseUserInterface.getHtmlDocumentFromDictEntries
@@ -688,9 +691,54 @@ htmlDocumentProse node =
 
                 readable ->
                     Just
-                        (readable
-                            |> List.map (\text -> { text = text, position = positionOfNode node })
+                        ((readable
+                            |> List.map
+                                (\text -> Prose { text = text, position = positionOfNode node })
+                         )
+                            ++ (documentLinkControls node |> List.map Control)
                         )
+
+
+{-| The `<a>` links of an HTML document widget, each as one control.
+
+One control per link, not per node: a link whose text wraps is drawn as one node per line, and
+offering both would read the same station twice and put two identical entries in a row. The first
+node in reading order wins, and clicking it opens what either line would have.
+
+The label is the anchor's own text. A link that has none -- the `Show Info` icon beside the agent's
+name is an anchor around an image -- draws no such node at all, so there is nothing here to label.
+
+-}
+documentLinkControls : UITreeNodeWithDisplayRegion -> List Common.Entry
+documentLinkControls widgetNode
+    =
+    widgetNode
+        |> EveOnline.ParseUserInterface.listDescendantsWithDisplayRegion
+        |> List.filter Common.isVisible
+        |> List.filter Common.isPickable
+        |> Common.nodesInReadingOrder
+        |> List.filterMap
+            (\node ->
+                node.uiNode
+                    |> EveOnline.ParseUserInterface.getDocumentLinkFromDictEntries
+                    |> Maybe.andThen
+                        (\link ->
+                            link.text
+                                |> EveOnline.ParseUserInterface.discardUnreadableText
+                                |> Maybe.map (\text -> ( link.url, Common.control (Common.plainText text) node ))
+                        )
+            )
+        |> List.foldl
+            (\( url, entry ) ( kept, seenUrls ) ->
+                if List.member url seenUrls then
+                    ( kept, seenUrls )
+
+                else
+                    ( entry :: kept, url :: seenUrls )
+            )
+            ( [], [] )
+        |> Tuple.first
+        |> List.reverse
 
 
 {-| The text of a multi-line text widget -- an item description, a note, a mail body.

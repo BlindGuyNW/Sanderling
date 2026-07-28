@@ -4555,6 +4555,43 @@ getHtmlDocumentFromDictEntries uiNode =
             )
 
 
+{-| One `<a>` of a rich-text browser widget, from the `Link` node the client draws it as.
+
+The node itself says nothing about which link it is: no `_setText`, and an empty `_hint`. The
+anchor's own attributes are in `_sr.attrs`, where `linkText` is the only surviving copy of the
+words and `url` is what it opens -- `showinfo:4024//60000538` for a station, and so on.
+
+Read from the node rather than paired with the anchors in `htmlstr`, because the two do not
+correspond. A link whose text wraps is one node per drawn line at the same `url` -- the agent
+conversation's station link is two -- and a link around an image is no node at all. Pairing them
+by order therefore aims a click at the wrong target, which is why `url` is carried: it is what
+tells two lines of one link apart from two different links.
+
+Observed 2026-07-27 on a level 1 mining agent's conversation.
+
+-}
+type alias DocumentLink =
+    { text : String
+    , url : String
+    }
+
+
+getDocumentLinkFromDictEntries : EveOnline.MemoryReading.UITreeNode -> Maybe DocumentLink
+getDocumentLinkFromDictEntries uiNode =
+    uiNode.dictEntriesOfInterest
+        |> Dict.get "_sr"
+        |> Maybe.andThen
+            (Json.Decode.decodeValue
+                (Json.Decode.at [ "entriesOfInterest", "attrs", "entriesOfInterest" ]
+                    (Json.Decode.map2 DocumentLink
+                        (Json.Decode.field "linkText" Json.Decode.string)
+                        (Json.Decode.field "url" Json.Decode.string)
+                    )
+                )
+                >> Result.toMaybe
+            )
+
+
 {-| An HTML document from the game client turned into the lines a person would hear, in order.
 
 Lines rather than one block of text, because each becomes an entry of its own on the page, and

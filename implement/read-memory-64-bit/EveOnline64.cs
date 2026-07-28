@@ -378,6 +378,29 @@ public class EveOnline64
             "htmlstr",
 
             /*
+             * 2026-07-27 The attributes of one `<a>` in a rich-text browser widget, on the
+             * `Link` nodes named "textlink" that the client puts under the widget's `links`
+             * container. Nothing else on those nodes says which link they are: they carry no
+             * text, and an empty "_hint".
+             *
+             * Needed because the nodes do not correspond one-to-one with the anchors in
+             * "htmlstr", so pairing them by order sends a click to the wrong target. A link
+             * whose text wraps is one node per drawn line -- the agent conversation's station
+             * link is two, at the same "href" -- and a link wrapping an image is no node at all.
+             * The "href" is what identifies the anchor.
+             * */
+            "attrs",
+
+            /*
+             * 2026-07-27 Found in the "attrs" Bunch above: the anchor's own text, and what it
+             * points at. "linkText" is the only place the link's words survive -- the node holds
+             * no "_setText" and an empty "_hint" -- and "url" is what tells two nodes of one
+             * wrapped link apart from two different links.
+             * */
+            "linkText",
+            "url",
+
+            /*
              * 2026-07-26 The text of the multi-line text widgets -- "EditPlainText" and the
              * "SE_EditTextlineCore" lines under it, which carry an item description, a note, a
              * mail body. None of those nodes carries "_setText" or "_text": the client hands the

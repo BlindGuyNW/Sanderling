@@ -34,6 +34,7 @@ import Html
 import Html.Attributes as HA
 import Html.Attributes.Aria
 import Html.Events as HE
+import Html.Keyed
 import Http
 import InterfaceToFrontendClient
 import Json.Decode
@@ -1837,22 +1838,41 @@ viewSourceFromLiveProcess state =
 presentParsedMemoryReading : Maybe InputRouteConfig -> ParseMemoryReadingSuccess -> State -> Html.Html Event
 presentParsedMemoryReading maybeInputRoute memoryReading state =
     let
-        continueWithTitle title htmlElements =
-            ([ title |> Html.text ] |> Html.h3 []) :: htmlElements
+        {- The page is rebuilt from a fresh reading every second, and these sections come and go
+           with whatever the client is showing: a util menu opens, the ship UI appears, a window
+           closes. Diffed by position, the section that moves into a slot inherits the DOM element
+           of the one that left it, and with it the keyboard focus the browser is holding on it --
+           which is how pressing Enter on `Request Mission` activated an EVE Help button. Naming
+           each section keeps the virtual DOM matching like with like; see
+           `Common.withDistinctKeys` for the same fix one level down.
+
+           Keys within a section stay positional, which is enough here: what moves at this level is
+           whole sections coming and going, and the lists of controls inside them carry their own
+           keys from the client's object addresses.
+        -}
+        keyedChunk name htmlElements =
+            htmlElements
+                |> List.indexedMap
+                    (\index element -> ( name ++ ":" ++ String.fromInt index, element ))
+
+        continueWithTitle title keyedElements =
+            ( "title", [ title |> Html.text ] |> Html.h3 [] ) :: keyedElements
 
         selectedViewHtml =
             case state.selectedViewMode of
                 ViewAlternateUI ->
                     continueWithTitle
                         "Using the Alternate UI"
-                        (displayMessageBoxes maybeInputRoute memoryReading.parsedUserInterface.messageBoxes
-                            ++ [ displayOrientation maybeInputRoute memoryReading.typeHierarchy memoryReading.parsedUserInterface
-                               , verticalSpacerFromHeightInEm 0.5
-                               ]
-                            ++ displayTutorialPointer memoryReading.parsedUserInterface
+                        (keyedChunk "messageBoxes" (displayMessageBoxes maybeInputRoute memoryReading.parsedUserInterface.messageBoxes)
+                            ++ keyedChunk "orientation"
+                                [ displayOrientation maybeInputRoute memoryReading.typeHierarchy memoryReading.parsedUserInterface
+                                , verticalSpacerFromHeightInEm 0.5
+                                ]
+                            ++ keyedChunk "tutorialPointer" (displayTutorialPointer memoryReading.parsedUserInterface)
                             --  While a hack is open it is the only thing being played, so it comes
                             --  before the ship and the overview rather than in window order.
-                            ++ (case memoryReading.parsedUserInterface.hackingWindow of
+                            ++ keyedChunk "hacking"
+                                (case memoryReading.parsedUserInterface.hackingWindow of
                                     Nothing ->
                                         []
 
@@ -1862,8 +1882,9 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                                             hackingWindow
                                         , verticalSpacerFromHeightInEm 0.5
                                         ]
-                               )
-                            ++ (case memoryReading.parsedUserInterface.shipUI of
+                                )
+                            ++ keyedChunk "shipUI"
+                                (case memoryReading.parsedUserInterface.shipUI of
                                     Nothing ->
                                         []
 
@@ -1873,8 +1894,9 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                                             shipUI
                                         , verticalSpacerFromHeightInEm 0.5
                                         ]
-                               )
-                            ++ (case memoryReading.parsedUserInterface.neocom of
+                                )
+                            ++ keyedChunk "neocom"
+                                (case memoryReading.parsedUserInterface.neocom of
                                     Nothing ->
                                         []
 
@@ -1882,49 +1904,54 @@ presentParsedMemoryReading maybeInputRoute memoryReading state =
                                         [ displayNeocom maybeInputRoute neocom
                                         , verticalSpacerFromHeightInEm 0.5
                                         ]
-                               )
+                                )
                             --  The inventory renders through the generic shell: its specialized
                             --  view was retired 2026-07-23 for repeatedly dropping parts of the
                             --  window -- first the container tree, then the filters -- the same
                             --  reason the station view went. Curation may reorder, never drop.
-                            ++ displayOverviewWindows maybeInputRoute memoryReading.parsedUserInterface.overviewWindows
-                            ++ [ [ ((memoryReading.parsedUserInterface.contextMenus |> List.length |> String.fromInt) ++ " Context menus") |> Html.text ] |> Html.h3 []
-                               , displayParsedContextMenus maybeInputRoute memoryReading.parsedUserInterface.contextMenus
-                               , verticalSpacerFromHeightInEm 0.5
-                               ]
-                            ++ displayUtilMenus maybeInputRoute memoryReading.typeHierarchy memoryReading.parsedUserInterface
-                            ++ displayInventoryMoveActions maybeInputRoute memoryReading.parsedUserInterface
-                            ++ displaySkillQueueReorderActions maybeInputRoute memoryReading.parsedUserInterface
-                            ++ displayOtherWindows maybeInputRoute memoryReading.typeHierarchy memoryReading.parsedUserInterface
-                            ++ displayNotificationsWidget maybeInputRoute memoryReading.parsedUserInterface
+                            ++ keyedChunk "overviewWindows" (displayOverviewWindows maybeInputRoute memoryReading.parsedUserInterface.overviewWindows)
+                            ++ keyedChunk "contextMenus"
+                                [ [ ((memoryReading.parsedUserInterface.contextMenus |> List.length |> String.fromInt) ++ " Context menus") |> Html.text ] |> Html.h3 []
+                                , displayParsedContextMenus maybeInputRoute memoryReading.parsedUserInterface.contextMenus
+                                , verticalSpacerFromHeightInEm 0.5
+                                ]
+                            ++ keyedChunk "utilMenus" (displayUtilMenus maybeInputRoute memoryReading.typeHierarchy memoryReading.parsedUserInterface)
+                            ++ keyedChunk "inventoryMove" (displayInventoryMoveActions maybeInputRoute memoryReading.parsedUserInterface)
+                            ++ keyedChunk "skillQueueReorder" (displaySkillQueueReorderActions maybeInputRoute memoryReading.parsedUserInterface)
+                            ++ keyedChunk "otherWindows" (displayOtherWindows maybeInputRoute memoryReading.typeHierarchy memoryReading.parsedUserInterface)
+                            ++ keyedChunk "notifications" (displayNotificationsWidget maybeInputRoute memoryReading.parsedUserInterface)
                         )
 
                 ViewUITree ->
                     continueWithTitle
                         "Inspecting the UI tree"
-                        [ "Below is an interactive tree view to explore this reading. You can expand and collapse individual nodes." |> Html.text
-                        , viewTreeMemoryReadingUITreeNode maybeInputRoute memoryReading.uiNodesWithDisplayRegion state.uiTreeView memoryReading.uiTree
-                        ]
+                        (keyedChunk "uiTree"
+                            [ "Below is an interactive tree view to explore this reading. You can expand and collapse individual nodes." |> Html.text
+                            , viewTreeMemoryReadingUITreeNode maybeInputRoute memoryReading.uiNodesWithDisplayRegion state.uiTreeView memoryReading.uiTree
+                            ]
+                        )
 
                 ViewParsedUI ->
                     continueWithTitle
                         "Inspecting the parsed user interface"
-                        [ "Below is an interactive tree view to explore the parsed user interface. You can expand and collapse individual nodes." |> Html.text
-                        , viewTreeParsedUserInterface maybeInputRoute memoryReading.uiNodesWithDisplayRegion state.parsedUITreeView memoryReading.parsedUserInterface
-                        ]
+                        (keyedChunk "parsedUI"
+                            [ "Below is an interactive tree view to explore the parsed user interface. You can expand and collapse individual nodes." |> Html.text
+                            , viewTreeParsedUserInterface maybeInputRoute memoryReading.uiNodesWithDisplayRegion state.parsedUITreeView memoryReading.parsedUserInterface
+                            ]
+                        )
 
         uiTreeSvg =
             viewUITreeSvg memoryReading.parsedUserInterface.uiTree
 
         visualSectionHtml =
-            continueWithTitle "Visualization of the UI tree" [ uiTreeSvg ]
+            continueWithTitle "Visualization of the UI tree" (keyedChunk "uiTreeSvg" [ uiTreeSvg ])
     in
     [ selectViewModeHtml state
     , tooltipInspectionHtml state.tooltipInspection
     , selectedViewHtml
-        |> List.map (List.singleton >> Html.div [])
-        |> Html.div []
-    , visualSectionHtml |> Html.div []
+        |> List.map (Tuple.mapSecond (List.singleton >> Html.div []))
+        |> Html.Keyed.node "div" []
+    , visualSectionHtml |> List.map Tuple.second |> Html.div []
     ]
         |> Html.div []
 
@@ -2161,7 +2188,17 @@ displayOtherWindows maybeInputRouteConfig typeHierarchy parsedUserInterface =
             context
             "Other windows"
             (\contextForContent ->
-                windows |> List.map (Frontend.View.GenericWindow.view typeHierarchy contextForContent)
+                --  Keyed on the client's own address for the window, so that a window opening or
+                --  closing moves the others' elements instead of re-pointing them; see
+                --  `withDistinctKeys`.
+                [ windows
+                    |> Frontend.View.Common.withDistinctKeys (.uiNode >> .uiNode >> .pythonObjectAddress)
+                    |> List.map
+                        (Tuple.mapSecond
+                            (Frontend.View.GenericWindow.view typeHierarchy contextForContent)
+                        )
+                    |> Html.Keyed.node "div" []
+                ]
             )
         ]
 

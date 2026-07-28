@@ -27,6 +27,7 @@ module Frontend.View.Common exposing
     , textLines
     , toggleControl
     , tooltipGestureAttribute
+    , withDistinctKeys
     )
 
 {-| The building blocks every view of the game client is made of.
@@ -229,8 +230,59 @@ actionList : Context event -> List Entry -> Html.Html event
 actionList context entries =
     entries
         |> collapseEntriesSharingRegion
-        |> List.map (entryHtml context)
-        |> Html.ul [ HA.style "list-style" "none", HA.style "padding-inline-start" "0" ]
+        |> withDistinctKeys entryKey
+        |> List.map (Tuple.mapSecond (entryHtml context))
+        |> Html.Keyed.node "ul" [ HA.style "list-style" "none", HA.style "padding-inline-start" "0" ]
+
+
+{-| What identifies a control between one reading and the next: the client's own address for the
+object, which survives the control moving in the list. Text that carries no action has no node, so
+its words are all there is to know it by.
+-}
+entryKey : Entry -> String
+entryKey entry =
+    case entry.target of
+        Just target ->
+            "node:" ++ target.node.uiNode.pythonObjectAddress
+
+        Nothing ->
+            "prose:" ++ entry.label
+
+
+{-| Keys for a list built out of the live reading, so that the virtual DOM matches an element to
+the same game control between readings instead of to whatever now occupies its position.
+
+Everything on this page is rebuilt from a fresh reading once a second, and these lists reorder and
+change length whenever the player opens, closes or raises a window in the client. Diffed by
+position, an element keeps its DOM identity -- and the keyboard focus the browser is holding on it
+-- while its click handler is quietly replaced by a different control's. Pressing Enter on
+`Request Mission` in the agent conversation activated a button of the EVE Help window, which had
+shifted into that slot. Reported 2026-07-27.
+
+A suffix disambiguates repeats. Duplicate keys make a keyed list diff worse than an unkeyed one,
+and repeats do occur: two windows can show the same prose, and `collapseEntriesSharingRegion`
+only collapses controls that share a rectangle.
+
+-}
+withDistinctKeys : (a -> String) -> List a -> List ( String, a )
+withDistinctKeys keyOf items =
+    items
+        |> List.foldl
+            (\item ( keyed, timesSeen ) ->
+                let
+                    base =
+                        keyOf item
+
+                    seenBefore =
+                        Dict.get base timesSeen |> Maybe.withDefault 0
+                in
+                ( ( base ++ "#" ++ String.fromInt seenBefore, item ) :: keyed
+                , Dict.insert base (seenBefore + 1) timesSeen
+                )
+            )
+            ( [], Dict.empty )
+        |> Tuple.first
+        |> List.reverse
 
 
 {-| The client builds one control as a nest of nodes that all cover the same rectangle: a wrapper,
