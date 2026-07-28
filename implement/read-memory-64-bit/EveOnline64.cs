@@ -645,9 +645,38 @@ public class EveOnline64
         return itemsArray;
     }
 
+    /*
+     * 2026-07-27 How long a string the reading will carry.
+     *
+     * The length comes out of the game client's memory, so a stale or misidentified pointer can
+     * claim any number at all and send us into a read of that size. That is what the bound is for.
+     * It is not a judgement about how much text is worth having, which is how the previous value
+     * -- 0x1000, inherited from upstream with no comment since the file was written -- ended up
+     * being used: the agent conversation window keeps its whole text in one "_sr.htmlstr", and the
+     * mission offer pane's copy runs past 4096 characters, so the reading dropped it.
+     *
+     * 0x40000 characters is half a megabyte in the worst (UTF-16) case, against a whole-tree
+     * reading that is already about 1.4 MB, and it still catches a garbage length by many orders
+     * of magnitude.
+     * */
+    const int MaxReadStringLength = 0x40000;
+
+    /*
+     * 2026-07-27 What an over-long string says about itself.
+     *
+     * Going past the bound used to replace the value with "String too long." -- discarding the
+     * readable prefix along with the tail, so the alternate UI showed an empty window rather than
+     * most of a mission briefing. Truncating keeps what was read and says that it was cut, which
+     * is the same honesty rule the views follow for a list they cut short.
+     *
+     * Deliberately not one of the "Failed to read ..." strings: `discardUnreadableText` drops
+     * those, and this text is real.
+     * */
+    const string StringTruncationMarker = " [... truncated]";
+
     static object ReadingFromPythonType_str(ulong address, LocalMemoryReadingTools memoryReadingTools)
     {
-        return ReadPythonStringValue(address, memoryReadingTools.memoryReader, 0x1000);
+        return ReadPythonStringValue(address, memoryReadingTools.memoryReader, MaxReadStringLength);
     }
 
     /*
@@ -763,14 +792,16 @@ public class EveOnline64
 
         var unicode_string_length = BitConverter.ToUInt64(pythonObjectMemory.Value.Span[0x10..]);
 
-        if (0x1000 < unicode_string_length)
-            return "String too long.";
-
         //  See the note on the empty case in `ReadPythonStringValue`.
         if (unicode_string_length is 0)
             return "";
 
-        var stringBytesCount = (int)unicode_string_length * 2;
+        //  See `MaxReadStringLength` and `StringTruncationMarker`.
+        var truncated = MaxReadStringLength < unicode_string_length;
+
+        var charactersToRead = truncated ? MaxReadStringLength : (int)unicode_string_length;
+
+        var stringBytesCount = charactersToRead * 2;
 
         var stringBytes =
             memoryReadingTools.memoryReader.ReadBytes(
@@ -780,7 +811,9 @@ public class EveOnline64
         if (!(stringBytes?.Length == stringBytesCount))
             return "Failed to read string bytes.";
 
-        return System.Text.Encoding.Unicode.GetString(stringBytes.Value.Span);
+        var stringValue = System.Text.Encoding.Unicode.GetString(stringBytes.Value.Span);
+
+        return truncated ? stringValue + StringTruncationMarker : stringValue;
     }
 
     static object ReadingFromPythonType_int(ulong address, LocalMemoryReadingTools memoryReadingTools)
@@ -1495,7 +1528,7 @@ public class EveOnline64
 
         var stringObject_ob_size = BitConverter.ToUInt64(stringObjectMemory.Value.Span[0x10..]);
 
-        if (0 < maxLength && maxLength < (int)stringObject_ob_size || int.MaxValue < stringObject_ob_size)
+        if (int.MaxValue < stringObject_ob_size)
             return "String too long.";
 
         /*
@@ -1508,12 +1541,19 @@ public class EveOnline64
         if (stringObject_ob_size is 0)
             return "";
 
-        var stringBytes = memoryReader.ReadBytes(stringObjectAddress + 8 * 4, (int)stringObject_ob_size);
+        //  See `MaxReadStringLength` and `StringTruncationMarker`.
+        var truncated = 0 < maxLength && (ulong)maxLength < stringObject_ob_size;
 
-        if (!(stringBytes?.Length == (int)stringObject_ob_size))
+        var bytesCount = truncated ? maxLength : (int)stringObject_ob_size;
+
+        var stringBytes = memoryReader.ReadBytes(stringObjectAddress + 8 * 4, bytesCount);
+
+        if (!(stringBytes?.Length == bytesCount))
             return "Failed to read string bytes.";
 
-        return System.Text.Encoding.ASCII.GetString(stringBytes.Value.Span);
+        var stringValue = System.Text.Encoding.ASCII.GetString(stringBytes.Value.Span);
+
+        return truncated ? stringValue + StringTruncationMarker : stringValue;
     }
 
     static double? ReadPythonFloatObjectValue(ulong floatObjectAddress, IMemoryReader memoryReader)

@@ -137,11 +137,19 @@ panelBodyHtml typeHierarchy context node =
     walk typeHierarchy False node |> .items |> groupedHtml context
 
 
+{-| What the window is called, as a person would hear it.
+
+The caption goes through `plainText` because the client writes markup into it: the agent
+conversation's caption is `Agent Conversation - Haskatoh Ihimela <color=0xFF808080>Level 1</color>`,
+and the heading of the window announced the colour tags out loud. Observed 2026-07-27; it is the
+`_setText` of the caption `Label`, so nothing before this point had stripped them.
+
+-}
 titleForWindow : GenericWindow -> String
 titleForWindow window =
     case window.caption of
         Just caption ->
-            caption
+            Common.plainText caption
 
         Nothing ->
             case window.name of
@@ -602,9 +610,11 @@ walk typeHierarchy insideCandidate node =
                                         { items = [ Control entry ], hasCandidate = True }
 
                                     Nothing ->
-                                        case paragraphProse node of
-                                            Just prose ->
-                                                { items = [ Prose prose ], hasCandidate = False }
+                                        case textWidgetProse node of
+                                            Just proseItems ->
+                                                { items = proseItems |> List.map Prose
+                                                , hasCandidate = False
+                                                }
 
                                             Nothing ->
                                                 --  Before the container walk because the row is
@@ -626,6 +636,61 @@ walk typeHierarchy insideCandidate node =
 
                                                             Nothing ->
                                                                 walkContainer typeHierarchy insideCandidate node
+
+
+{-| The text a widget holds itself, for the two kinds of widget whose text is nowhere else.
+
+Both keep their content off the tree -- the client hands it to the renderer, and what is left
+under the widget is a stack of line objects with correct geometry and no characters. The container
+walk can only offer those as unlabeled controls, which is how an item description came to read as
+a column of numbers and an agent conversation as an empty window. Where the widget has the text,
+the widget speaks it and its children are not descended into.
+
+The two differ only in where the client keeps it: a paragraph list, or an HTML document.
+
+-}
+textWidgetProse : UITreeNodeWithDisplayRegion -> Maybe (List ProseText)
+textWidgetProse node =
+    case paragraphProse node of
+        Just prose ->
+            Just [ prose ]
+
+        Nothing ->
+            htmlDocumentProse node
+
+
+{-| The widget that keeps an HTML document: the agent conversation's briefing and mission offer.
+
+One prose item per line rather than one for the whole document, so a mission briefing can be
+stepped through and skipped instead of arriving as a single unskippable paragraph. `mergeProseRuns`
+puts them back together where they are short enough to be worth hearing as one line, which is what
+becomes of the agent's name, division and standing.
+
+Not descending into the children costs the document's `showinfo` links their clickable nodes. Their
+text is in the line either way, and a window that reads is worth more than one that offers links
+and says nothing.
+
+-}
+htmlDocumentProse : UITreeNodeWithDisplayRegion -> Maybe (List ProseText)
+htmlDocumentProse node =
+    case
+        node.uiNode
+            |> EveOnline.ParseUserInterface.getHtmlDocumentFromDictEntries
+            |> Maybe.map EveOnline.ParseUserInterface.linesFromHtmlDocument
+    of
+        Nothing ->
+            Nothing
+
+        Just documentLines ->
+            case documentLines |> List.filterMap EveOnline.ParseUserInterface.discardUnreadableText of
+                [] ->
+                    Nothing
+
+                readable ->
+                    Just
+                        (readable
+                            |> List.map (\text -> { text = text, position = positionOfNode node })
+                        )
 
 
 {-| The text of a multi-line text widget -- an item description, a note, a mail body.

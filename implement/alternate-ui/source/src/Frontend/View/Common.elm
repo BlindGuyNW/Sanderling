@@ -912,12 +912,7 @@ plainText text =
         |> replaceWithRegex "<t>" ", "
         |> EveOnline.ParseUserInterface.removeMarkupTags
         |> replaceWithRegex "<[^>]*$" ""
-        |> replaceWithRegex "&nbsp;" " "
-        |> replaceWithRegex "&lt;" "<"
-        |> replaceWithRegex "&gt;" ">"
-        |> replaceWithRegex "&quot;" "\""
-        |> replaceWithRegex "&#39;" "'"
-        |> replaceWithRegex "&amp;" "&"
+        |> EveOnline.ParseUserInterface.decodeHtmlEntities
         |> String.trim
 
 

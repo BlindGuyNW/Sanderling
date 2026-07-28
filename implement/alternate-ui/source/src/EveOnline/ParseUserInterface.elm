@@ -4531,6 +4531,104 @@ getParagraphsText uiNode =
             )
 
 
+{-| The HTML document behind a rich-text browser widget: the agent conversation's briefing and its
+mission offer pane, and whatever else the client draws from a page rather than from a string.
+
+This is the same problem `getParagraphsText` solves, needing a different answer because it is a
+different widget. The lines under it are `SE_TextlineCore` nodes with correct heights and widths
+and not one character between them, and unlike `EditPlainText` this widget keeps no `paragraphs`
+either -- so an agent conversation reached the page as a column of numbered nothings, `entry_0` to
+`entry_39`, and read as an empty window while the client was showing a mission offer.
+
+What it does keep is `_sr.htmlstr`, the whole document the client rendered from. Observed
+2026-07-27 on a level 1 mining agent's conversation window.
+
+-}
+getHtmlDocumentFromDictEntries : EveOnline.MemoryReading.UITreeNode -> Maybe String
+getHtmlDocumentFromDictEntries uiNode =
+    uiNode.dictEntriesOfInterest
+        |> Dict.get "_sr"
+        |> Maybe.andThen
+            (Json.Decode.decodeValue
+                (Json.Decode.at [ "entriesOfInterest", "htmlstr" ] Json.Decode.string)
+                >> Result.toMaybe
+            )
+
+
+{-| An HTML document from the game client turned into the lines a person would hear, in order.
+
+Lines rather than one block of text, because each becomes an entry of its own on the page, and
+that is what lets a reader step through a mission briefing and skip past what they have already
+heard. Splitting on the tags that end a block gives that structure without our guessing at it: the
+client separates `Division: Mining` from `Effective Standing: 0.0` with a `<br>` exactly as it
+separates one paragraph of the briefing from the next, and a paragraph carries no break inside
+itself, so it survives whole.
+
+The document is a whole page -- `<html>`, a `<head>` linking a stylesheet, a `<table>` laying the
+agent's portrait beside their details, `<font>` and `<a href=showinfo:...>` inside the prose. Only
+the tags that end a block are worth keeping as anything. The rest go, and so does the template's
+indentation, which would otherwise reach a reader as runs of spaces.
+
+The `<img>` tags go with them. The portrait and the mission-type picture say nothing a reader
+needs, and the one that carries an `alt` is the `Show Info` icon, which labels a link whose text is
+already in the line beside it.
+
+-}
+linesFromHtmlDocument : String -> List String
+linesFromHtmlDocument document =
+    document
+        |> replaceTagWithLineBreak "br\\s*/?"
+        |> replaceTagWithLineBreak "/(?:p|div|tr|td|th|table|center|li|ul|ol|h[1-6])\\s*"
+        |> removeMarkupTags
+        |> decodeHtmlEntities
+        |> String.replace "\u{000D}" "\n"
+        |> String.split "\n"
+        |> List.map collapseWhitespaceRuns
+        |> List.filter (String.isEmpty >> not)
+
+
+replaceTagWithLineBreak : String -> String -> String
+replaceTagWithLineBreak tagPattern text =
+    case Regex.fromStringWith { caseInsensitive = True, multiline = False } ("<" ++ tagPattern ++ ">") of
+        Nothing ->
+            text
+
+        Just regex ->
+            Regex.replace regex (always "\n") text
+
+
+{-| One line of a document as it would be spoken: no leading indentation, and no run of whitespace
+where the source had a newline and twenty spaces of template indentation.
+-}
+collapseWhitespaceRuns : String -> String
+collapseWhitespaceRuns text =
+    case Regex.fromString "\\s+" of
+        Nothing ->
+            String.trim text
+
+        Just regex ->
+            Regex.replace regex (always " ") text |> String.trim
+
+
+{-| The HTML entities the client emits, turned into the characters they stand for. `&nbsp;` read
+aloud is not a space.
+
+`&amp;` is decoded last, so that an escaped entity such as `&amp;nbsp;` -- the client showing the
+text `&nbsp;` rather than a space -- does not turn into a space on the second pass.
+
+-}
+decodeHtmlEntities : String -> String
+decodeHtmlEntities text =
+    [ ( "&nbsp;", " " )
+    , ( "&lt;", "<" )
+    , ( "&gt;", ">" )
+    , ( "&quot;", "\"" )
+    , ( "&#39;", "'" )
+    , ( "&amp;", "&" )
+    ]
+        |> List.foldl (\( entity, character ) -> String.replace entity character) text
+
+
 {-| Whether a text widget refuses to be edited, or `Nothing` on a node that is not one.
 
 The client builds an item description and the corporation application's `Application Text` box

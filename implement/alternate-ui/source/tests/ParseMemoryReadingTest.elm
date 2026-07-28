@@ -18,6 +18,7 @@ allTests =
         , column_cell_texts_from_row_text
         , alt_text_from_markup
         , hacking_node_name_from_hint_text
+        , agent_conversation_lines_from_html_document
         ]
 
 
@@ -255,3 +256,76 @@ parse_current_solar_system_from_ui_node_text =
                             |> Expect.equal expectedResult
             )
         |> Test.describe "Parse current solar system from UI node text"
+
+
+{- 2026-07-27, the conversation window of a level 1 mining agent, read live from the client while
+   the agent was offering the mission "Starting Simple".
+
+   The window's text is nowhere in the UI tree: under the widget sit `SE_TextlineCore` nodes named
+   `entry_0` to `entry_39` with correct heights and widths and not one character, so the alternate
+   UI showed an empty window while the client was showing a mission. The whole document is in
+   `_sr.htmlstr`, and this is it verbatim -- a full page with a `<head>`, a `<table>` laying the
+   portrait beside the agent's details, `<font>` and `<a href=showinfo:...>` inside the prose, the
+   template's own indentation, and the CR before the LF that the client writes between paragraphs.
+
+   Kept in full because every part of it is a case: the head that contributes nothing, the table
+   cells that have to end a line, the `&nbsp;` between the security status and the station, the
+   `<i>` that the client never closes before "Declining a mission", and the indentation that would
+   otherwise reach a reader as runs of spaces.
+-}
+
+
+observedAgentConversationHtmlDocument : String
+observedAgentConversationHtmlDocument =
+    """
+                <html>
+                <head>
+                    <link rel="stylesheet" type="text/css" href="res:/ui/css/agentconvo.css">
+                </head>
+                    <body background-color=#00000000 link=#ffa800>
+                        
+        <table border=0 cellpadding=0 cellspacing=0>
+            <tr>
+                <td valign=top width=140>
+                    <img src="portrait:3016171" width=128 height=128 size=256 style=margin-right:10>
+                </td>
+                <td valign=top>
+                    <font size=18>Haskatoh Ihimela</font> <a href=showinfo:1373//3016171><img src=icon:38_208 size=16 alt="Show Info"></a>
+                    <br>
+                    Division: Mining
+                    <br><br>
+                    <font color=0xFF3A9AEB>0.9</font>&nbsp;<a href=showinfo:4024//60000538>Hatakani VI - Moon 5 - Hyasyoda Corporation Refinery</a> <font color=#E3170D></font>
+                    <br>
+                    <br>
+                    Effective Standing: 0.0
+                    <br>
+                    
+                </td>
+            </tr>
+        </table>
+    <br><br><span id=subheader>Starting Simple</span><br><br>Damnation, they're sending them out younger and younger. Are you sure you're old enough to fly a starship? Oh, well, we have to play the hand we're dealt, and if you're the best I can get, I suppose you'll do. <br><br>\u{000D}
+We'll start simple, youngster. Banidine is normally all but worthless, so <i>real</i> miners don't usually bother with the stuff. Still, I've found a buyer who's willing to take whatever we can mine. So, get me 20,000 units of Banidine and I'll make it worth your while. It should be easy, even for a pup like you, but it will show me that you're serious. <br><br>\u{000D}
+There's an asteroid field near here that's lousy with the stuff – I've bookmarked it for you. Get back as soon as you can and I'll arrange a little bonus.  \u{000D}
+<br><br><i>Declining a mission from a particular agent more than once every 4 hours may result in a loss of standing with that agent, except in the case of special missions that clearly state otherwise in their description.<i><br><center><img src="res:/UI/netres/mission_content/miningmission.png" align=center hspace=4 vspace=4></center>
+                    </body>
+                </html>
+            """
+
+
+agent_conversation_lines_from_html_document : Test.Test
+agent_conversation_lines_from_html_document =
+    Test.test "Lines from the agent conversation HTML document" <|
+        \_ ->
+            observedAgentConversationHtmlDocument
+                |> EveOnline.ParseUserInterface.linesFromHtmlDocument
+                |> Expect.equal
+                    [ "Haskatoh Ihimela"
+                    , "Division: Mining"
+                    , "0.9 Hatakani VI - Moon 5 - Hyasyoda Corporation Refinery"
+                    , "Effective Standing: 0.0"
+                    , "Starting Simple"
+                    , "Damnation, they're sending them out younger and younger. Are you sure you're old enough to fly a starship? Oh, well, we have to play the hand we're dealt, and if you're the best I can get, I suppose you'll do."
+                    , "We'll start simple, youngster. Banidine is normally all but worthless, so real miners don't usually bother with the stuff. Still, I've found a buyer who's willing to take whatever we can mine. So, get me 20,000 units of Banidine and I'll make it worth your while. It should be easy, even for a pup like you, but it will show me that you're serious."
+                    , "There's an asteroid field near here that's lousy with the stuff – I've bookmarked it for you. Get back as soon as you can and I'll arrange a little bonus."
+                    , "Declining a mission from a particular agent more than once every 4 hours may result in a loss of standing with that agent, except in the case of special missions that clearly state otherwise in their description."
+                    ]
